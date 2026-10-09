@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Engram — Dashboard local</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="brand">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 5 12 19 19 5" fill="none" stroke="#3ff0c0" stroke-width="2"/><circle cx="5" cy="5" r="3"/><circle cx="19" cy="5" r="3"/><circle cx="12" cy="19" r="3" fill="#a78bfa"/></svg>
+        <div class="brand-text">
+          <h1>Engram</h1>
+          <span class="chip">local</span>
+        </div>
+      </div>
+      <nav id="nav">
+        <a href="#/overview" data-view="overview"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/></svg><span>Overview</span></a>
+        <a href="#/memories" data-view="memories"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="3" width="14" height="4" rx="1"/><rect x="5" y="10" width="14" height="4" rx="1"/><rect x="5" y="17" width="14" height="4" rx="1"/></svg><span>Memories</span></a>
+        <a href="#/sessions" data-view="sessions"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l4 2"/></g></svg><span>Sessions</span></a>
+        <a href="#/projects" data-view="projects"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6l3 3h9v11H3Z"/></g></svg><span>Projects</span></a>
+        <a href="#/health" data-view="health"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-6 4 12 3-6h4"/></g></svg><span>Salud</span></a>
+        <a href="#/system" data-view="system"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/><rect x="7" y="4" width="3" height="4"/><rect x="14" y="10" width="3" height="4"/><rect x="8" y="16" width="3" height="4"/></g></svg><span>System</span></a>
+      </nav>
+      <div id="sidebar-footer">
+        <div id="api-status"><span class="dot" id="api-dot"></span><span id="api-label">conectando…</span></div>
+        <div id="api-version" class="mono"></div>
+      </div>
+    </aside>
+    <main id="main">
+      <header id="topbar">
+        <div class="topbar-head">
+          <span class="eyebrow" id="view-eyebrow">ENGRAM · LOCAL</span>
+          <h2 id="view-title">Overview</h2>
+        </div>
+        <div id="topbar-actions">
+          <span id="pulses" class="pulses"></span>
+          <select id="project-select" hidden></select>
+          <button id="refresh-btn" class="btn ghost icon" title="Recargar">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 9a7 7 0 0 0-12-3L4 9m0-5v5h5M5 15a7 7 0 0 0 12 3l3-3m0 5v-5h-5"/></g></svg>
+          </button>
+        </div>
+      </header>
+      <section id="view"></section>
+      <footer id="ticker"></footer>
+    </main>
+  </div>
+
+  <div id="drawer-backdrop" hidden></div>
+  <aside id="drawer" hidden aria-label="Detalle"></aside>
+
+  <div id="modal-backdrop" hidden>
+    <div id="modal" role="dialog" aria-modal="true"></div>
+  </div>
+
+  <div id="toasts"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
