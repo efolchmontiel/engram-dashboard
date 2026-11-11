@@ -49,6 +49,14 @@ Actualiza el README y añade al bloque `Unreleased` de [CHANGELOG.md](CHANGELOG.
 
 Entrega un diff o commits locales con el problema, el cambio y las comprobaciones realizadas. Acuerda el destino de la contribución con quien reciba el trabajo; esta guía no presupone un remoto, un sistema de pull requests o un pipeline de CI.
 
+## Revisión y merge
+
+Ningún cambio entra a `main` sin pasar por un pull request. La rama `main` está protegida:
+exige PR, revisión aprobada del maintainer declarado en `.github/CODEOWNERS`, prohíbe el push
+directo, el force push y el borrado de la rama. Un agente o colaborador puede abrir el PR y
+actualizarlo, pero el merge lo decide el maintainer: que el PR esté en verde y sea mergeable no
+es autorización para mergearlo.
+
 ## Licencia y procedencia
 
 El proyecto usa la licencia MIT, con atribución a `Engram Dashboard Local contributors` en `LICENSE`. Prepara las contribuciones para esa distribución. Si incorporas código o recursos de terceros, indica su procedencia y licencia y conserva los avisos correspondientes; no sustituyas esos avisos por la atribución colectiva del proyecto.
