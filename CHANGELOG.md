@@ -10,7 +10,7 @@ Este bloque describe las funcionalidades presentes en el código para una futura
 - Vistas de sesiones con timeline de observaciones y de proyectos con contadores y directorios asociados.
 - Detalle de observación con Markdown acotado, resaltado de búsqueda, metadatos en hora local, enlace directo, copia y descarga Markdown/JSON.
 - Edición y borrado soft de observaciones mediante la API del motor, con `expected_project`; confirmación de eliminación en la interfaz.
-- Borrado físico de observaciones (`hard=true`), borrado permanente de prompts y de sesiones sin observaciones, y listado de prompts recientes por ámbito, expuestos en el backend sobre las rutas del motor.
+- Borrado físico de observaciones (`hard=true`), borrado permanente de prompts y de sesiones sin observaciones, listado de prompts recientes por ámbito, y borrado en cascada de un proyecto vía el CLI del motor (`engram delete project[, --hard]`), todo expuesto en el backend sobre el motor; los borrados irreversibles, incluida la cascada en ambos modos, exigen un snapshot vigente.
 - Snapshots de seguridad: `POST /api/snapshots` escribe el export global del motor en `<data_dir>/dashboard-snapshots/` y todo borrado irreversible exige uno vigente (≤10 minutos) del propio directorio, verificado por el backend y no por la interfaz.
 - Consulta de relaciones, sus estados de juicio y la cola de revisión, con aviso si falta la colección principal de relaciones. Estas vistas no modifican relaciones ni revisiones.
 - Vista System con diagnóstico `doctor`, export JSON de proyecto y comparación de la versión detectada con la referencia declarada, Engram 3.7.0.

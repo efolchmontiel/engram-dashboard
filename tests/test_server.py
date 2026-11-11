@@ -774,5 +774,204 @@ class DestructiveTests(DashboardFixture):
         self.assertIn(sid, self.session_ids())
 
 
+class ProjectCascadeTests(DashboardFixture):
+    """Cascada de proyecto vía el CLI del motor, con snapshot obligatorio.
+
+    Cada test crea su propio proyecto efímero y lo destruye: el orden no
+    afecta y la semilla de la clase queda intacta para los test de rechazo.
+    """
+
+    # --- helpers -------------------------------------------------------------
+
+    def snapshot_dir(self):
+        return os.path.join(self.data_dir, "dashboard-snapshots")
+
+    def take_snapshot(self):
+        status, body = self.client.post("/api/snapshots", {})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(os.path.dirname(body["path"]), self.snapshot_dir())
+        return body["path"]
+
+    @staticmethod
+    def q(path):
+        return urllib.parse.quote(path, safe="")
+
+    def own_project(self, tag):
+        """Proyecto efímero con una sesión, una observación y un prompt."""
+        name = f"cascade-{tag}"
+        sid = "sess-" + tag
+        status, body = self.api.post("/sessions", {
+            "id": sid, "project": name, "directory": "/tmp/" + sid})
+        assert status == 201, body
+        status, body = self.api.post("/observations", {
+            "session_id": sid, "project": name, "type": "decision",
+            "title": f"Obs cascada {tag}",
+            "content": f"contenido cascada unico {tag}"})
+        assert status == 201, body
+        status, body = self.api.post("/prompts", {
+            "session_id": sid, "project": name,
+            "content": f"prompt cascada unico {tag}"})
+        assert status == 201, body
+        return name, sid
+
+    def seed_obs_count(self):
+        status, body = self.client.get("/api/observations?project=" + PROJECT)
+        self.assertEqual(status, 200, body)
+        return len(body["observations"])
+
+    # --- cascada soft ---------------------------------------------------------
+
+    def test_cascade_soft_deletes_observations_and_prompts_keeps_sessions(self):
+        name, sid = self.own_project("soft")
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/projects/{urllib.parse.quote(name, safe='')}"
+            f"?snapshot={self.q(snap)}")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["project"], name)
+        self.assertFalse(body["hard"])
+        self.assertEqual(body["observations"], 1)
+        self.assertEqual(body["prompts"], 1)
+        # El CLI cuenta las sesiones que BORRA: en soft, ninguna.
+        self.assertEqual(body["sessions"], 0)
+        # Las observaciones del proyecto desaparecen de los listados activos.
+        status, obs = self.client.get("/api/observations?project=" + name)
+        self.assertEqual(status, 200)
+        self.assertEqual(obs["observations"], [])
+        # El prompt se borró para siempre (el motor no ofrece soft de prompts).
+        status, prompts = self.client.get("/api/prompts?project=" + name)
+        self.assertEqual(status, 200)
+        self.assertEqual(prompts["prompts"], [])
+        # La sesión sobrevive vacía.
+        status, sessions = self.client.get("/api/sessions/recent?project=" + name)
+        self.assertEqual(status, 200)
+        self.assertEqual([s["id"] for s in sessions["sessions"]], [sid])
+        self.assertTrue(body["cli_output"])
+
+    def test_cascade_hard_removes_sessions_too(self):
+        name, sid = self.own_project("hard")
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/projects/{urllib.parse.quote(name, safe='')}"
+            f"?hard=true&snapshot={self.q(snap)}")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["project"], name)
+        self.assertTrue(body["hard"])
+        self.assertEqual(body["observations"], 1)
+        self.assertEqual(body["prompts"], 1)
+        # En hard el CLI reporta la sesión que borró.
+        self.assertEqual(body["sessions"], 1)
+        # Con el proyecto ya inexistente, el motor responde 404 (o una lista vacía).
+        status, obs = self.client.get("/api/observations?project=" + name)
+        self.assertIn(status, (200, 404), obs)
+        if status == 200:
+            self.assertEqual(obs["observations"], [])
+        status, sessions = self.client.get("/api/sessions/recent?project=" + name)
+        self.assertIn(status, (200, 404), sessions)
+        if status == 200:
+            self.assertEqual(sessions["sessions"], [])
+
+    # --- rechazos -------------------------------------------------------------
+
+    def test_cascade_without_snapshot_is_refused_and_data_intact(self):
+        name, sid = self.own_project("sin-snapshot")
+        status, body = self.client.delete("/api/projects/" + name)
+        self.assertEqual(status, 403, body)
+        self.assertIn("snapshot", body["error"].lower())
+        status, obs = self.client.get("/api/observations?project=" + name)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(obs["observations"]), 1)
+        status, sessions = self.client.get("/api/sessions/recent?project=" + name)
+        self.assertEqual(status, 200)
+        self.assertIn(sid, [s["id"] for s in sessions["sessions"]])
+
+    def test_cascade_refuses_unknown_project_name(self):
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/projects/proyecto-inexistente-cascada?snapshot={self.q(snap)}")
+        self.assertEqual(status, 400, body)
+        self.assertIn("proyecto-inexistente-cascada", body["error"])
+        # La semilla y sus datos quedan intactos: nada corrió contra el motor.
+        self.assertEqual(self.seed_obs_count(), 4)
+
+    def test_cascade_refuses_injection_shaped_names(self):
+        snap = self.take_snapshot()
+        before = self.seed_obs_count()
+        for name in ("-rf", "foo/../bar", "proj%2F%2E%2E%2Fbar"):
+            status, body = self.client.delete(
+                f"/api/projects/{name}?snapshot={self.q(snap)}")
+            self.assertEqual(status, 400, (name, body))
+            self.assertIn("error", body)
+        self.assertEqual(self.seed_obs_count(), before)
+
+    def test_cascade_rejects_non_boolean_hard_value(self):
+        name, sid = self.own_project("hard-invalido")
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/projects/{name}?hard=quizas&snapshot={self.q(snap)}")
+        self.assertEqual(status, 400, body)
+        self.assertIn("hard", body["error"].lower())
+        status, obs = self.client.get("/api/observations?project=" + name)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(obs["observations"]), 1)
+
+    # --- caminos de error del CLI --------------------------------------------
+
+    def fake_bin(self, script):
+        """Dashboard con un binario de motor falso, para forzar fallos del CLI."""
+        path = os.path.join(self.data_dir, "fake-engram")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\n" + script)
+        os.chmod(path, 0o755)
+        cfg = Config(host="127.0.0.1", port=0, engram_bin=path,
+                     engram_api=self.api.base, data_dir=self.data_dir)
+        httpd = create_server(cfg)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return Http(f"http://127.0.0.1:{httpd.server_address[1]}")
+
+    def test_cascade_cli_failure_is_502_without_claiming_success(self):
+        name, _ = self.own_project("cli-falla")
+        snap = self.take_snapshot()
+        path = f"/api/projects/{name}?snapshot={self.q(snap)}"
+        # Salida no cero y salida cero sin el formato esperado.
+        for script in ('echo boom >&2; exit 3\n', 'echo "sin conteos"; exit 0\n'):
+            client = self.fake_bin(script)
+            status, body = client.delete(path)
+            self.assertEqual(status, 502, (script, body))
+            self.assertIn("no se declara éxito", body["error"])
+            self.assertNotIn("sessions", body)
+        # El CLI falso nunca tocó el store: el proyecto sigue entero.
+        status, obs = self.client.get("/api/observations?project=" + name)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(obs["observations"]), 1)
+
+    def test_cascade_error_output_is_bounded(self):
+        name, _ = self.own_project("cli-verboso")
+        snap = self.take_snapshot()
+        client = self.fake_bin(
+            'head -c 9000 /dev/zero | tr "\\0" "x" >&2; exit 4\n')
+        status, body = client.delete(
+            f"/api/projects/{name}?snapshot={self.q(snap)}")
+        self.assertEqual(status, 502, body)
+        self.assertIn("no se declara éxito", body["error"])
+        self.assertLessEqual(len(body["error"]), 600)
+
+    def test_cascade_refuses_help_shaped_project_name(self):
+        # El motor lista un proyecto "-h"; el CLI lo interpreta como ayuda y
+        # termina sin borrar. Nunca se declara éxito y la sesión sobrevive.
+        status, body = self.api.post("/sessions", {
+            "id": "sess-help", "project": "-h", "directory": "/tmp/sess-help"})
+        self.assertEqual(status, 201, body)
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/projects/-h?snapshot={self.q(snap)}")
+        self.assertEqual(status, 502, body)
+        self.assertNotIn("sessions", body)
+        status, _ = self.client.get("/api/sessions/sess-help")
+        self.assertEqual(status, 200)
+
+
 if __name__ == "__main__":
     unittest.main()
