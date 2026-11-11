@@ -348,7 +348,8 @@ function showObservation(obs) {
       ${obsMeta(obs)}
       <div class="drawer-actions">
         <button class="btn" data-act="edit">Editar</button>
-        <button class="btn danger" data-act="delete">Eliminar</button>
+        <button class="btn" data-act="hide">Ocultar (soft)</button>
+        <button class="btn danger" data-act="delete-hard">Borrar definitivamente (hard)</button>
       </div>
       <div class="drawer-actions">
         <button class="btn ghost" data-act="copy-id">Copy ID</button>
@@ -365,10 +366,10 @@ function showObservation(obs) {
   $('[data-act="copy-content"]', $("#drawer")).onclick = () => copyText(obs.content, "Contenido");
   $('[data-act="export-md"]', $("#drawer")).onclick = () => downloadObs(obs, "md");
   $('[data-act="export-json"]', $("#drawer")).onclick = () => downloadObs(obs, "json");
-  $('[data-act="delete"]', $("#drawer")).onclick = () => confirmModal({
-    title: "¿Eliminar esta memoria?",
-    bodyHtml: `<b>${esc(obs.title)}</b><br><br>Se realiza un borrado <b>soft</b>: la observación queda oculta en el listado (el borrado definitivo solo existe vía CLI, <span class="mono">engram delete ${obs.id} --hard</span>).`,
-    confirmText: "Eliminar",
+  $('[data-act="hide"]', $("#drawer")).onclick = () => confirmModal({
+    title: "¿Ocultar esta memoria?",
+    bodyHtml: `<b>${esc(obs.title)}</b><br><br>Se realiza un borrado <b>soft</b>: la observación queda oculta en el listado y no vuelve a cargarse en el panel.`,
+    confirmText: "Ocultar",
     onConfirm: async () => {
       await api(`/api/observations/${obs.id}?expected_project=${encodeURIComponent(obs.project)}`, { method: "DELETE" });
       toast("Memoria eliminada (soft)", "ok");
@@ -377,6 +378,7 @@ function showObservation(obs) {
       route();
     },
   });
+  $('[data-act="delete-hard"]', $("#drawer")).onclick = () => hardDeleteObservation(obs);
 }
 
 function editObservation(obs) {
@@ -1007,7 +1009,7 @@ async function viewSessions(view) {
         <table>
           <thead><tr><th>Sesión</th>
             ${global ? `<th style="width:150px">Proyecto</th>` : ""}
-            <th style="width:140px">Memorias</th><th style="width:180px">Inicio</th></tr></thead>
+            <th style="width:140px">Memorias</th><th style="width:180px">Inicio</th><th style="width:110px"></th></tr></thead>
           <tbody>
             ${sessions.map((s) => `
               <tr data-session="${esc(s.id)}">
@@ -1015,12 +1017,23 @@ async function viewSessions(view) {
                 ${global ? `<td class="mono muted">${esc(s.project)}</td>` : ""}
                 <td><b class="mono">${s.observation_count}</b> <span class="faint">obs</span></td>
                 <td class="muted" title="${esc(fmtDT(s.started_at))}">${rel(s.started_at)}</td>
+                <td class="actions-cell">${s.observation_count === 0
+                  ? `<button class="btn danger sm" data-del-session="${esc(s.id)}" title="Borrar la sesión vacía">Eliminar</button>`
+                  : ""}</td>
               </tr>`).join("")}
           </tbody>
         </table>
       </div>`;
     view.querySelectorAll("tr[data-session]").forEach((tr) => {
       tr.onclick = () => { location.hash = `#/sessions/${encodeURIComponent(tr.dataset.session)}`; };
+    });
+    /* Solo sesiones vacías: el botón nunca debe terminar abriendo el detalle. */
+    view.querySelectorAll("button[data-del-session]").forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const s = sessions.find((x) => String(x.id) === btn.dataset.delSession);
+        if (s) deleteEmptySessionFlow(s);
+      };
     });
   } catch (err) {
     view.innerHTML = banner(err);
@@ -1089,6 +1102,10 @@ async function viewProjects(view) {
               ${p.directories.slice(0, 2).map((d) => `<div class="mono faint cell-cut" title="${esc(d)}">${esc(d)}</div>`).join("")}
               ${p.directories.length > 2 ? `<div class="faint">+${p.directories.length - 2} directorios más</div>` : ""}
             </div>` : ""}
+            <div class="card-footer">
+              <button class="btn danger sm" data-del-project="${esc(p.name)}"
+                title="Cascada de borrado del proyecto">Eliminar proyecto</button>
+            </div>
           </div>`).join("")}
       </div>`;
     view.querySelectorAll(".project-card").forEach((el) => {
@@ -1101,9 +1118,315 @@ async function viewProjects(view) {
         location.hash = "#/memories";
       };
     });
+    view.querySelectorAll("button[data-del-project]").forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const p = projects.find((x) => x.name === btn.dataset.delProject);
+        if (p) deleteProjectFlow(p);
+      };
+    });
   } catch (err) {
     view.innerHTML = banner(err);
   }
+}
+
+/* --- Prompts -------------------------------------------------------------------------- */
+
+const PROMPTS_LIMIT = 200;
+
+async function viewPrompts(view) {
+  showProjectSelect(true);
+  HL.term = "";
+  view.innerHTML = loading();
+  try {
+    const data = await api(`/api/prompts?${scopeQS({ limit: PROMPTS_LIMIT }).toString()}`);
+    const prompts = data.prompts || [];
+    if (!prompts.length) {
+      view.innerHTML = empty("Sin prompts", `No hay prompts guardados en ${scopeLabel()}.`);
+      return;
+    }
+    const global = !state.project;
+    view.innerHTML = `
+      ${data.truncated
+        ? `<div class="notice">Se listan los <b>${prompts.length}</b> prompts más recientes de ${esc(scopeLabel())} (límite de la petición).</div>`
+        : `<div class="notice muted">Mostrando <b>${prompts.length}</b> prompts de ${esc(scopeLabel())}.</div>`}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th style="width:80px">ID</th>
+            ${global ? `<th style="width:130px">Proyecto</th>` : ""}
+            <th style="width:180px">Sesión</th><th>Contenido</th>
+            <th style="width:120px">Creado</th><th style="width:110px"></th></tr></thead>
+          <tbody>
+            ${prompts.map((p) => `
+              <tr data-prompt-id="${esc(p.id)}">
+                <td class="mono muted">#${esc(p.id)}</td>
+                ${global ? `<td class="mono muted" title="${esc(p.project)}"><div class="cell-cut">${esc(p.project)}</div></td>` : ""}
+                <td class="mono muted"><div class="cell-cut" title="${esc(p.session_id)}">${esc(p.session_id)}</div></td>
+                <td><div class="preview">${highlight(esc(String(p.content || "").slice(0, 220)))}</div></td>
+                <td class="muted" title="${esc(fmtDT(p.created_at))}">${rel(p.created_at)}</td>
+                <td class="actions-cell"><button class="btn danger sm" data-del-prompt="${esc(p.id)}"
+                  title="Borrar el prompt de forma permanente">Eliminar</button></td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
+    view.querySelectorAll("button[data-del-prompt]").forEach((btn) => {
+      btn.onclick = () => {
+        const p = prompts.find((x) => String(x.id) === btn.dataset.delPrompt);
+        if (p) deletePromptFlow(p);
+      };
+    });
+  } catch (err) {
+    view.innerHTML = banner(err);
+  }
+}
+
+/* --- borrado destructivo: snapshot primero + confirmación por nombre ------------------- */
+
+/* Un único componente para toda acción irreversible (hard de observación, prompt,
+   sesión vacía y cascada de proyecto). El modal simple (confirmModal) queda intacto
+   para las acciones soft. Red de seguridad, en este orden:
+   1. POST /api/snapshots antes de habilitar cualquier confirmación; sin snapshot
+      vigente el backend rechaza el borrado y aquí el botón ni siquiera se activa.
+   2. El botón de confirmación solo se habilita cuando el snapshot existe y el
+      texto tipeado coincide exactamente con el id o el nombre del proyecto.
+   3. El aviso de irreversibilidad es explícito y sin ambigüedad de deshacer.
+   4. El error del backend se muestra tal cual (403 snapshot, 409 sesión con
+      observaciones, 502 CLI). */
+
+function fmtBytes(n) {
+  if (n == null) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+/* Cierre del modal destructivo abierto, para que un cambio de vista no deje
+   el backdrop tapando la vista siguiente. */
+let closeDestructiveModal = null;
+
+async function destructiveModal({
+  title, introHtml, warnings = [], confirmLabel = "Eliminar definitivamente",
+  confirmWord, modeChoice = null, request, successSummary, onSuccess,
+}) {
+  const backdrop = document.createElement("div");
+  backdrop.className = "destructive-backdrop";
+  backdrop.innerHTML = `
+    <div class="destructive" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+      <h3>${esc(title)}</h3>
+      <p class="d-intro">${introHtml}</p>
+      <ul class="d-warnings">${warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
+      ${modeChoice ? `<div class="d-mode">${modeChoice.options.map((o, i) => `
+        <label><input type="radio" name="d-mode" value="${esc(o.value)}" ${i === 0 ? "checked" : ""}>
+          <span><b>${esc(o.label)}</b> ${esc(o.desc)}</span></label>`).join("")}
+      </div>` : ""}
+      <div class="d-snapshot pending" data-role="snapshot">Generando snapshot del export global…</div>
+      <label class="d-typelabel">Esta operación no se puede deshacer. Para confirmar, escribe exactamente
+        <b class="mono">${esc(confirmWord)}</b></label>
+      <input type="text" class="d-confirm-input" data-role="confirm-input"
+        autocomplete="off" spellcheck="false" disabled>
+      <div data-role="feedback"></div>
+      <div class="d-actions">
+        <button class="btn ghost" data-role="cancel">Cancelar</button>
+        <button class="btn danger" data-role="confirm" disabled>${esc(confirmLabel)}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+
+  const modal = $(".destructive", backdrop);
+  const snapshotBox = $('[data-role="snapshot"]', modal);
+  const input = $('[data-role="confirm-input"]', modal);
+  const feedback = $("[data-role='feedback']", modal);
+  const cancelBtn = $('[data-role="cancel"]', modal);
+  const confirmBtn = $('[data-role="confirm"]', modal);
+
+  let snapshotPath = null;
+  let busy = false;
+  let closed = false;
+  const releaseFocus = trapFocus(modal);
+
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    closeDestructiveModal = null;
+    document.removeEventListener("keydown", onKey, true);
+    releaseFocus();
+    backdrop.remove();
+  };
+  closeDestructiveModal = close;
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); close(); }
+  };
+  document.addEventListener("keydown", onKey, true);
+  backdrop.onclick = (e) => { if (e.target === backdrop && !busy) close(); };
+  cancelBtn.onclick = () => { if (!busy) close(); };
+
+  const refreshConfirm = () => {
+    confirmBtn.disabled = busy || !snapshotPath || input.value !== confirmWord;
+  };
+  input.addEventListener("input", refreshConfirm);
+
+  const showFeedback = (html, kind = "") => {
+    feedback.innerHTML = html ? `<div class="d-feedback ${kind}">${html}</div>` : "";
+  };
+
+  /* Snapshot primero: mientras no exista, ni el input ni el botón se habilitan. */
+  try {
+    const snap = await api("/api/snapshots", { method: "POST", body: {} });
+    if (closed) return;
+    snapshotPath = snap.path;
+    snapshotBox.className = "d-snapshot";
+    snapshotBox.innerHTML = `Snapshot listo (${esc(fmtBytes(snap.bytes))}):` +
+      ` <span class="path">${esc(snap.path)}</span>`;
+    input.disabled = false;
+    input.focus();
+  } catch (err) {
+    if (closed) return;
+    snapshotBox.className = "d-snapshot error";
+    snapshotBox.textContent = `No se pudo generar el snapshot: ${err.error || "error inesperado"}. Sin snapshot vigente el backend rechaza el borrado.`;
+  }
+  refreshConfirm();
+
+  confirmBtn.onclick = async () => {
+    if (busy || !snapshotPath || input.value !== confirmWord) return;
+    busy = true;
+    refreshConfirm();
+    cancelBtn.disabled = true;
+    input.disabled = true;
+    confirmBtn.textContent = "Eliminando…";
+    showFeedback("");
+    const mode = modeChoice ? $("input[name='d-mode']:checked", modal).value : null;
+    try {
+      const data = await request(snapshotPath, mode);
+      if (!closed && onSuccess) onSuccess();
+      if (closed) return;
+      busy = false;
+      modal.innerHTML = `
+        <h3>${esc(title)}</h3>
+        <div class="d-result">
+          <p class="d-ok">Operación completada.</p>
+          ${successSummary(data)}
+        </div>
+        <div class="d-actions">
+          <button class="btn primary" data-role="close-done">Cerrar</button>
+        </div>`;
+      const done = $('[data-role="close-done"]', modal);
+      done.onclick = close;
+      done.focus();
+    } catch (err) {
+      if (closed) return;
+      busy = false;
+      confirmBtn.textContent = confirmLabel;
+      cancelBtn.disabled = false;
+      input.disabled = false;
+      /* El mensaje del backend, verbatim: incluye el 409 de sesión con
+         observaciones y el 403 de snapshot vencido. */
+      showFeedback(esc(err.error || "Error inesperado"), "error");
+      refreshConfirm();
+    }
+  };
+}
+
+/* Borrado físico de una observación desde el drawer. */
+function hardDeleteObservation(obs) {
+  destructiveModal({
+    title: "Borrar definitivamente la memoria",
+    introHtml: `Memoria <b class="mono">#${esc(obs.id)}</b> · ${esc(obs.title)}<br>Proyecto <b>${esc(obs.project)}</b>`,
+    warnings: [
+      "El borrado físico elimina la fila de la base de datos: no hay papelera ni forma de restaurar la memoria.",
+      "El borrado soft (Ocultar) tampoco tiene deshacer, pero la fila permanece en el store.",
+    ],
+    confirmWord: String(obs.id),
+    confirmLabel: "Eliminar definitivamente",
+    request: (snapshotPath) => api(
+      `/api/observations/${obs.id}?expected_project=${encodeURIComponent(obs.project)}&hard=true&snapshot=${encodeURIComponent(snapshotPath)}`,
+      { method: "DELETE" }),
+    successSummary: (d) => `<p class="d-counts">Observación <b class="mono">#${esc(d.id)}</b> eliminada físicamente${d.hard_delete === false ? " (el backend respondió soft)" : ""}.</p>`,
+    onSuccess: () => {
+      state.obsIndex = null;
+      if (location.hash.startsWith("#/memories/obs/")) {
+        history.replaceState(null, "", "#/memories");
+      }
+      closeDrawer();
+      route();
+    },
+  });
+}
+
+/* Borrado permanente de un prompt (fila de la tabla Prompts). */
+function deletePromptFlow(p) {
+  destructiveModal({
+    title: "Borrar prompt",
+    introHtml: `Prompt <b class="mono">#${esc(p.id)}</b> · proyecto <b>${esc(p.project)}</b><br>Sesión <span class="mono">${esc(p.session_id)}</span>`,
+    warnings: [
+      "El prompt se borra de forma permanente: no hay papelera ni restore.",
+    ],
+    confirmWord: String(p.id),
+    request: (snapshotPath) => api(
+      `/api/prompts/${p.id}?snapshot=${encodeURIComponent(snapshotPath)}`,
+      { method: "DELETE" }),
+    successSummary: (d) => `<p class="d-counts">Prompt <b class="mono">#${esc(d.id)}</b>: eliminado de forma permanente.</p>`,
+    onSuccess: () => route(),
+  });
+}
+
+/* Borrado de una sesión sin observaciones (fila de la tabla Sessions). */
+function deleteEmptySessionFlow(s) {
+  destructiveModal({
+    title: "Borrar sesión vacía",
+    introHtml: `Sesión <b class="mono">${esc(s.id)}</b> · proyecto <b>${esc(s.project)}</b><br>La sesión no tiene observaciones.`,
+    warnings: [
+      "La sesión se borra de forma permanente: no hay papelera ni restore.",
+      "El motor elimina también los prompts asociados a la sesión.",
+    ],
+    confirmWord: String(s.id),
+    request: (snapshotPath) => api(
+      `/api/sessions/${encodeURIComponent(s.id)}?snapshot=${encodeURIComponent(snapshotPath)}`,
+      { method: "DELETE" }),
+    successSummary: (d) => `<p class="d-counts">Sesión <b class="mono">${esc(d.id)}</b>: eliminada de forma permanente.</p>`,
+    onSuccess: () => {
+      if (location.hash.startsWith("#/sessions/")) {
+        history.replaceState(null, "", "#/sessions");
+      }
+      route();
+    },
+  });
+}
+
+/* Cascada de proyecto: soft u hard, siempre con snapshot y nombre exacto. */
+function deleteProjectFlow(p) {
+  destructiveModal({
+    title: "Eliminar proyecto",
+    introHtml: `Proyecto <b class="mono">${esc(p.name)}</b><br>` +
+      `Contenido actual: <b>${p.observations || 0}</b> observaciones, <b>${p.sessions || 0}</b> sesiones y <b>${p.prompts || 0}</b> prompts.`,
+    warnings: [
+      "La cascada es irreversible: no hay papelera ni restore.",
+      `Incluso en modo soft los ${p.prompts || 0} prompts se borran para siempre y las ${p.sessions || 0} sesiones quedan vacías.`,
+      "En modo hard se eliminan además las sesiones y las filas de la base de datos.",
+    ],
+    confirmWord: p.name,
+    modeChoice: {
+      options: [
+        { value: "soft", label: "Soft",
+          desc: `— oculta las ${p.observations || 0} observaciones; los prompts se pierden para siempre y las sesiones quedan vacías.` },
+        { value: "hard", label: "Hard",
+          desc: "— elimina también las sesiones y las filas físicamente." },
+      ],
+    },
+    request: (snapshotPath, mode) => api(
+      `/api/projects/${encodeURIComponent(p.name)}?snapshot=${encodeURIComponent(snapshotPath)}${mode === "hard" ? "&hard=true" : ""}`,
+      { method: "DELETE" }),
+    successSummary: (d) => `<p class="d-counts">Proyecto <b class="mono">${esc(d.project)}</b> (${d.hard ? "hard" : "soft"}): <b>${d.observations}</b> observaciones, <b>${d.prompts}</b> prompts y <b>${d.sessions}</b> sesiones afectadas.</p>`,
+    onSuccess: () => {
+      state.obsIndex = null;
+      if (state.project === p.name) {
+        state.project = ALL_PROJECTS;
+        localStorage.setItem("dash.project", state.project);
+        fillProjectSelect().then(syncProjectSelect);
+      }
+      route();
+    },
+  });
 }
 
 /* --- Salud: relaciones y revisión ----------------------------------------------------- */
@@ -1475,11 +1798,12 @@ async function focusSearch() {
 /* --- router ----------------------------------------------------------------------------------- */
 
 const TITLES = { overview: "Overview", memories: "Memories", sessions: "Sessions",
-  projects: "Projects", health: "Salud de memoria", system: "System" };
+  prompts: "Prompts", projects: "Projects", health: "Salud de memoria", system: "System" };
 
 /* Eyebrow de cabecera: micro-etiqueta fija por vista, como el rótulo del panel. */
 const EYEBROWS = { overview: "engram · panel global", memories: "engram · memorias",
-  sessions: "engram · sesiones", projects: "engram · proyectos",
+  sessions: "engram · sesiones", prompts: "engram · prompts",
+  projects: "engram · proyectos",
   health: "engram · salud de memoria", system: "engram · sistema",
   "session-detail": "engram · sesión" };
 
@@ -1488,6 +1812,7 @@ function listHashFor(name) {
 }
 
 async function route() {
+  if (closeDestructiveModal) closeDestructiveModal();
   const parts = (location.hash.replace(/^#\/?/, "") || "overview").split("/");
   const name = parts[0] || "overview";
   const isObs = name === "memories" && parts[1] === "obs" && parts[2];
@@ -1510,6 +1835,7 @@ async function route() {
   }
   if (view === "sessions") return viewSessions(el);
   if (view === "session-detail") return viewSessionDetail(el, decodeURIComponent(parts[1]));
+  if (view === "prompts") return viewPrompts(el);
   if (view === "projects") return viewProjects(el);
   if (view === "health") return viewHealth(el);
   if (view === "system") return viewSystem(el);
