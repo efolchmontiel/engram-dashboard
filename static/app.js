@@ -469,11 +469,11 @@ function windowNotice(shown, truncated, total) {
 
 /* Un mismo color por tipo en el radial, las barras y las etiquetas. */
 const TYPE_HUE = {
-  decision: "#7ef0a0", architecture: "#a78bfa", bugfix: "#ff7a7a", config: "#ffd166",
-  discovery: "#3ff0c0", learning: "#9ee37d", pattern: "#5eead4", preference: "#7fdcff",
-  session_summary: "#fbbf24", bug: "#f59e0b", error: "#ff6b6b", manual: "#94a3b8",
+  decision: "#b4e7c7", architecture: "#ffb1dd", bugfix: "#ff718f", config: "#e0c27a",
+  discovery: "#f095c8", learning: "#b4e7c7", pattern: "#a9c7ee", preference: "#c4daf6",
+  session_summary: "#f2b86d", bug: "#f2b86d", error: "#ff718f", manual: "#a78e9b",
 };
-const typeColor = (t) => TYPE_HUE[t] || "#8aa0a0";
+const typeColor = (t) => TYPE_HUE[t] || "#76616b";
 
 const pct = (n, d) => (d ? (n * 100) / d : 0);
 const fmtPct = (n, d) => (d ? `${pct(n, d).toFixed(1).replace(/\.0$/, "")}%` : "—");
@@ -506,7 +506,7 @@ function renderRadial(byType, total) {
     const C = 2 * Math.PI * r;
     const gap = (C * GAP_DEG) / 360;
     const arc = (C - gap) * (total ? count / total : 0);
-    const color = type === "otros" ? "#a78bfa" : typeColor(type);
+    const color = type === "otros" ? "#ffb1dd" : typeColor(type);
     return `
       <circle class="mc-ring-track" cx="${cx}" cy="${cy}" r="${r}" stroke-width="${width}"/>
       <circle class="mc-ring-arc" data-ring="${esc(type)}" cx="${cx}" cy="${cy}" r="${r}" stroke="${color}"
@@ -525,13 +525,13 @@ function renderRadial(byType, total) {
       aria-label="Distribución por tipo: ${total} observaciones en ${all.length} tipos. ${breakdown}.">
     <defs>
       <linearGradient id="mc-sweep-grad" x1="210" y1="10" x2="304.1" y2="33.4" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#3ff0c0" stop-opacity="0"/>
-        <stop offset=".72" stop-color="#3ff0c0" stop-opacity=".10"/>
-        <stop offset="1" stop-color="#7ef0d8" stop-opacity=".34"/>
+        <stop offset="0" stop-color="#f095c8" stop-opacity="0"/>
+        <stop offset=".72" stop-color="#f095c8" stop-opacity=".10"/>
+        <stop offset="1" stop-color="#ff76c3" stop-opacity=".34"/>
       </linearGradient>
       <radialGradient id="mc-core-glow">
-        <stop offset="0" stop-color="#3ff0c0" stop-opacity=".16"/>
-        <stop offset="1" stop-color="#3ff0c0" stop-opacity="0"/>
+        <stop offset="0" stop-color="#f095c8" stop-opacity=".16"/>
+        <stop offset="1" stop-color="#f095c8" stop-opacity="0"/>
       </radialGradient>
     </defs>
     <circle cx="${cx}" cy="${cy}" r="96" fill="url(#mc-core-glow)"/>
