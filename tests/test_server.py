@@ -1027,5 +1027,45 @@ class DeleteContractTests(unittest.TestCase):
         self.assertNotIn("hard=true", soft)
 
 
+class PortFallbackTests(unittest.TestCase):
+    """El dashboard no debe morir porque otro proceso tenga el puerto."""
+
+    def test_binds_the_next_free_port_when_the_configured_one_is_busy(self):
+        busy = free_port()
+        data_dir = tempfile.mkdtemp(prefix="engram-dash-port-")
+        self.addCleanup(shutil.rmtree, data_dir, ignore_errors=True)
+        with socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", busy))
+            occupied.listen(1)
+            config = Config(host="127.0.0.1", port=busy, engram_bin="engram",
+                            engram_api="http://127.0.0.1:1", data_dir=data_dir)
+            httpd, offset = server.bind_dashboard(config)
+            try:
+                self.assertGreaterEqual(offset, 1)
+                self.assertGreater(httpd.server_address[1], busy)
+                thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+                thread.start()
+                client = Http(f"http://127.0.0.1:{httpd.server_address[1]}")
+                status, _ = client.get("/api/nope")
+                self.assertEqual(status, 404)
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+
+    def test_binds_the_configured_port_when_it_is_free(self):
+        free = free_port()
+        data_dir = tempfile.mkdtemp(prefix="engram-dash-port-")
+        self.addCleanup(shutil.rmtree, data_dir, ignore_errors=True)
+        config = Config(host="127.0.0.1", port=free, engram_bin="engram",
+                        engram_api="http://127.0.0.1:1", data_dir=data_dir)
+        httpd, offset = server.bind_dashboard(config)
+        try:
+            self.assertEqual(offset, 0)
+            self.assertEqual(httpd.server_address[1], free)
+        finally:
+            # Nunca se sirvió: shutdown() esperaría a un serve_forever que no corre.
+            httpd.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()
