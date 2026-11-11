@@ -658,3 +658,6 @@ body[data-hidden="1"] .mc-sweep { animation-play-state: paused; }
 .destructive .d-result .d-counts { color: var(--muted); margin: 0; font-size: 12.5px; }
 .destructive .d-result .d-counts b { color: var(--text); }
 .destructive .d-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* Pista bajo un campo del formulario del drawer (edición inline). */
+.form-hint { font: var(--micro); color: var(--faint); margin-top: 5px; }

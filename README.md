@@ -12,7 +12,7 @@ La versión de referencia del motor declarada por el código es **Engram 3.7.0**
 - Consultar los prompts recientes del ámbito en Prompts, con búsqueda visual por contenido y borrado permanente por fila.
 - Consultar relaciones entre observaciones y la cola de revisión en Salud. Esta vista es de solo lectura.
 - Leer el detalle de una memoria, copiar su ID o contenido, descargarla como Markdown o JSON y compartir su enlace local `#/memories/obs/<id>`.
-- Editar título, tipo y contenido, ocultar una observación con borrado soft o eliminarla físicamente, con confirmación en la interfaz.
+- Editar título, tipo, contenido, ámbito y clave temática (dejarla vacía borra el campo), ocultar una observación con borrado soft o eliminarla físicamente, con confirmación en la interfaz.
 - Eliminar un proyecto completo en cascada (soft u hard) desde Projects, con la elección de modo y los contadores reales del proyecto.
 - Consultar la versión y configuración del motor en System, ver el diagnóstico `doctor` y descargar el export JSON de un proyecto generado por Engram.
 

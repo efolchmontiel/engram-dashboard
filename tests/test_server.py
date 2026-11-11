@@ -527,6 +527,27 @@ class MutationTests(DashboardFixture):
         _, bulk = self.client.get("/api/observations?project=" + PROJECT)
         self.assertNotIn(obs_id, [o["id"] for o in bulk["observations"]])
 
+    def test_patch_clears_topic_key_only_with_an_empty_string(self):
+        """El motor rechaza null y limpia con cadena vacía; la UI depende de eso."""
+        obs_id = self._own_obs("tema")
+        status, _ = self.client.patch(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}",
+            {"topic_key": "tema/clave"})
+        self.assertEqual(status, 200)
+        status, body = self.client.patch(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}",
+            {"topic_key": None})
+        self.assertEqual(status, 400, body)
+        status, after = self.client.get(f"/api/observations/{obs_id}")
+        self.assertEqual(after["topic_key"], "tema/clave")
+        status, body = self.client.patch(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}",
+            {"topic_key": ""})
+        self.assertEqual(status, 200, body)
+        status, after = self.client.get(f"/api/observations/{obs_id}")
+        self.assertEqual(status, 200)
+        self.assertIsNone(after.get("topic_key"))
+
     def test_delete_rejects_wrong_expected_project_without_deleting(self):
         obs_id = self._own_obs("borrado-proyecto")
         status, _ = self.client.delete(
@@ -971,6 +992,39 @@ class ProjectCascadeTests(DashboardFixture):
         self.assertNotIn("sessions", body)
         status, _ = self.client.get("/api/sessions/sess-help")
         self.assertEqual(status, 200)
+
+
+class DeleteContractTests(unittest.TestCase):
+    """La interfaz no puede borrar de forma permanente sin snapshot (S3).
+
+    No hay runner de JS en este repo, así que el invariante se comprueba sobre
+    el fuente: toda llamada DELETE debe llevar `snapshot=` en su vecindario
+    salvo el borrado soft de una observación, que es el único exento.
+    """
+
+    APP_JS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "static", "app.js")
+    WINDOW = 4
+
+    def test_only_the_soft_observation_delete_skips_the_snapshot(self):
+        with open(self.APP_JS, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+
+        seen, offenders = [], []
+        for index, line in enumerate(lines):
+            if 'method: "DELETE"' not in line:
+                continue
+            seen.append(index + 1)
+            window = "\n".join(lines[max(0, index - self.WINDOW):index + 1])
+            if "snapshot=" not in window:
+                offenders.append((index + 1, line.strip()))
+
+        self.assertGreaterEqual(len(seen), 5, f"no se encontraron los DELETE esperados: {seen}")
+        self.assertEqual(len(offenders), 1,
+                         f"DELETE sin snapshot fuera del soft: {offenders}")
+        _lineno, soft = offenders[0]
+        self.assertIn("expected_project=", soft)
+        self.assertNotIn("hard=true", soft)
 
 
 if __name__ == "__main__":
