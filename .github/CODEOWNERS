@@ -1,3 +1,16 @@
-# Todo cambio requiere revisión del maintainer antes de entrar a main.
-# La protección de la rama exige PR + aprobación de quien figura acá.
+# Regla de entrada a main: PR + 1 aprobación (branch protection).
+#
+# Solo cuentan las aprobaciones de cuentas con permiso de escritura en el repo.
+# Hoy esas cuentas son únicamente las dos del maintainer: @efolchmontiel y
+# @efolchm. Una aprobación de cualquier cuenta externa queda registrada como
+# comentario y no desbloquea el merge.
+#
+# El autor no puede aprobar su propio PR: GitHub rechaza esa review con
+# "Can not approve your own pull request". Por eso el requisito de aprobación
+# del code owner quedó desactivado (con un único code owner que además es el
+# autor, ningún PR se podía aprobar nunca). La aprobación viene de la otra
+# cuenta del maintainer, o de un agente autenticado como una de ellas.
+#
+# Esta lista se mantiene porque además autoasigna la revisión al maintainer en
+# cada PR, que es la señal útil que queda.
 * @efolchmontiel
