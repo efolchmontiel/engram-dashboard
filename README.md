@@ -2,7 +2,7 @@
 
 Interfaz web local para consultar y gestionar la memoria de [Engram](https://github.com/Gentleman-Programming/engram). El backend usa la librería estándar de Python y la API HTTP de Engram; el frontend es HTML, CSS y JavaScript sin compilación ni dependencias de paquetes.
 
-La versión de referencia del motor declarada por el código es **Engram 3.2.1**. El dashboard escucha por defecto en `http://127.0.0.1:7438`. Está pensado para uso local de una persona: no incorpora autenticación de usuarios.
+La versión de referencia del motor declarada por el código es **Engram 3.7.0**. El dashboard escucha por defecto en `http://127.0.0.1:7438`. Está pensado para uso local de una persona: no incorpora autenticación de usuarios.
 
 ## Qué puedes hacer
 
@@ -14,12 +14,27 @@ La versión de referencia del motor declarada por el código es **Engram 3.2.1**
 - Editar título, tipo y contenido, o eliminar una observación mediante borrado soft, con confirmación en la interfaz.
 - Consultar la versión y configuración del motor en System, ver el diagnóstico `doctor` y descargar el export JSON de un proyecto generado por Engram.
 
-El dashboard no crea observaciones, sesiones ni proyectos; tampoco juzga relaciones, cambia estados de revisión o ofrece borrado físico. La creación y las demás operaciones se realizan con las herramientas de Engram.
+El dashboard no crea observaciones, sesiones ni proyectos; tampoco juzga relaciones ni cambia estados de revisión. La creación y esas operaciones se realizan con las herramientas de Engram.
+
+### Borrado desde la API del dashboard
+
+La interfaz todavía expone solo el borrado soft de observaciones. El backend ya ofrece el resto de las operaciones del motor y las usa la suite de pruebas:
+
+| Ruta | Efecto |
+| --- | --- |
+| `DELETE /api/observations/{id}?expected_project=P` | Borrado soft: la observación deja de listarse y la fila queda en el store. |
+| `DELETE /api/observations/{id}?expected_project=P&hard=true&snapshot=RUTA` | Borrado físico. También purga una observación ya soft-borrada. |
+| `DELETE /api/prompts/{id}?snapshot=RUTA` | Borrado permanente del prompt. |
+| `DELETE /api/sessions/{id}?snapshot=RUTA` | Borrado permanente de la sesión; el motor responde `409` si todavía tiene observaciones. |
+| `POST /api/snapshots` | Escribe el export global del motor en `<data_dir>/dashboard-snapshots/` y devuelve su ruta. |
+| `GET /api/prompts?project=P` (o `all_projects=true`) | Lista los prompts recientes del ámbito. |
+
+Todo borrado irreversible exige el parámetro `snapshot` con la ruta de un snapshot del propio directorio del dashboard, con menos de 10 minutos de antigüedad. El backend verifica esa ruta y la frescura antes de reenviar la orden: no depende de lo que muestre la interfaz. El borrado soft no requiere snapshot.
 
 ## Requisitos e instalación
 
 - Python 3. Las pruebas de este candidato se ejecutan con Python 3.14.7; no se ha validado una versión mínima.
-- Engram instalado, con la API correspondiente a 3.2.1 como referencia de compatibilidad. Para el arranque automático, su binario debe estar en el `PATH`, en `~/.local/bin/engram` o en la ruta indicada por `ENGRAM_BIN`.
+- Engram instalado, con la API correspondiente a 3.7.0 como referencia de compatibilidad. Para el arranque automático, su binario debe estar en el `PATH`, en `~/.local/bin/engram` o en la ruta indicada por `ENGRAM_BIN`.
 - Un navegador moderno con JavaScript habilitado.
 - Para las opciones de arranque automático: Linux con `systemd --user`. La integración con Omarchy es opcional.
 
@@ -74,7 +89,7 @@ El frontend no recibe el token mediante la configuración ni lo incorpora a sus 
 
 ## Compatibilidad y pruebas
 
-`server.VERIFIED_ENGRAM_VERSION` declara `3.2.1`. La vista System y el indicador lateral comparan ese valor con la versión devuelta por `/health`. Una coincidencia identifica la versión de referencia; no es una prueba de funcionamiento de tu instalación. Si la versión difiere, la UI avisa y permite seguir consultando los datos disponibles.
+`server.VERIFIED_ENGRAM_VERSION` declara `3.7.0`. La vista System y el indicador lateral comparan ese valor con la versión devuelta por `/health`. Una coincidencia identifica la versión de referencia; no es una prueba de funcionamiento de tu instalación. Si la versión difiere, la UI avisa y permite seguir consultando los datos disponibles.
 
 Las superficies de salud pueden no estar disponibles en otro motor. Si falta la colección principal de relaciones, la vista muestra un aviso. La cola de revisión tiene una limitación: un error al cargarla puede mostrarse como ausencia de revisiones pendientes.
 
@@ -84,7 +99,7 @@ La suite de integración inicia un Engram real con `ENGRAM_DATA_DIR` temporal, d
 env -u ENGRAM_HTTP_TOKEN PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_server
 ```
 
-El comando elimina el token heredado para esta ejecución. Revisa también las demás variables y la configuración del binario que vayas a probar. Las pruebas comprueban rutas de lectura, búsquedas, agregados, errores y edición/borrado con `expected_project`; no sustituyen una revisión del navegador.
+El comando elimina el token heredado para esta ejecución. Revisa también las demás variables y la configuración del binario que vayas a probar. Las pruebas comprueban rutas de lectura, búsquedas, agregados, errores, edición y borrado con `expected_project`, snapshots de export y los rechazos de los borrados irreversibles sin snapshot vigente; no sustituyen una revisión del navegador.
 
 `ENGRAM_BIN` permite elegir un binario candidato y `ENGRAM_EXPECTED_VERSION` cambia la versión esperada por la suite. Esta también exige que esa expectativa coincida con `VERIFIED_ENGRAM_VERSION`: cambiar solo la variable no declara compatible un motor nuevo. Consulta [CONTRIBUTING.md](CONTRIBUTING.md) para el procedimiento local.
 
@@ -162,7 +177,7 @@ Navegador
 
 La dirección predeterminada es loopback, pero `ENGRAM_DASH_HOST` permite cambiarla. Usar `0.0.0.0` u otra interfaz, un proxy de red o un túnel puede dar acceso a memorias, rutas locales, exportaciones y operaciones de escritura a otras personas. El servidor no añade autenticación de usuarios ni TLS. Mantén privados tanto el puerto del dashboard como el de Engram.
 
-La interfaz envía `expected_project` en PATCH y DELETE, y el backend lo reenvía al motor. Esa comprobación de propiedad no reemplaza el control de acceso. El borrado es soft y no tiene una acción de deshacer en el panel. Conserva una copia de seguridad de Engram antes de modificar datos importantes.
+La interfaz envía `expected_project` en PATCH y DELETE, y el backend lo reenvía al motor. Esa comprobación de propiedad no reemplaza el control de acceso. El borrado soft no tiene una acción de deshacer en el panel, y el borrado físico, el de prompts y el de sesiones son irreversibles: el motor no expone una papelera ni un restore por API. Por eso el backend exige un snapshot de export vigente antes de cualquiera de ellos y lo verifica él mismo. Conserva además una copia de seguridad de Engram antes de modificar datos importantes.
 
 Los archivos descargados, el portapapeles, las capturas y los registros pueden contener memoria privada. El export de proyecto conserva el formato y las colecciones que devuelve Engram; no equivale a una copia de seguridad completa de SQLite. Consulta [SECURITY.md](SECURITY.md) para los límites de confianza y la comunicación de problemas.
 
@@ -177,6 +192,8 @@ Los archivos descargados, el portapapeles, las capturas y los registros pueden c
 - Salud carga relaciones por páginas de 100 y aplica el filtro por tipo sobre las páginas cargadas. La cola de revisión solicita hasta 100 elementos. Si una observación referenciada no está en el índice cargado, el panel informa de ello.
 - El detalle muestra el contador de revisiones, pero no incluye una vista de versiones anteriores. El Markdown admite un subconjunto de encabezados, listas, negrita y código; no interpreta HTML del contenido.
 - `doctor` utiliza el proyecto seleccionado; sin selección puede reportar un proyecto desconocido. No hay una vista dedicada a prompts ni controles para administrar juicios o estados de revisión.
+- La interfaz todavía no expone el borrado físico, el de prompts, el de sesiones vacías ni la cascada de proyecto: por ahora esas operaciones existen solo en la API del backend. La cascada de proyecto no está disponible por HTTP en el motor y requerirá invocar su CLI.
+- Un snapshot es el export global del motor, no una copia del store SQLite: cubre observaciones, sesiones y prompts que el export incluya, y no reemplaza un backup del archivo de base de datos.
 
 Los cambios pendientes de publicación se describen en [CHANGELOG.md](CHANGELOG.md).
 

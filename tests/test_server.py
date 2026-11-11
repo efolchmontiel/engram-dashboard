@@ -13,8 +13,10 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
@@ -23,7 +25,7 @@ from server import Config, create_server
 import server
 
 ENGRAM_BIN = os.environ.get("ENGRAM_BIN") or shutil.which("engram") or os.path.expanduser("~/.local/bin/engram")
-EXPECTED_ENGRAM_VERSION = os.environ.get("ENGRAM_EXPECTED_VERSION", "3.2.1")
+EXPECTED_ENGRAM_VERSION = os.environ.get("ENGRAM_EXPECTED_VERSION", "3.7.0")
 
 PROJECT = "projtest"
 S1, S2 = "sess-alpha", "sess-beta"
@@ -534,6 +536,242 @@ class MutationTests(DashboardFixture):
         status, after = self.client.get(f"/api/observations/{obs_id}")
         self.assertEqual(status, 200)
         self.assertEqual(after["title"], "Obs efimera borrado-proyecto")
+
+
+class DestructiveTests(DashboardFixture):
+    """Borrados irreversibles: exigen un snapshot vigente del export completo.
+
+    Cada test crea lo que borra, así el orden de ejecución no lo afecta.
+    """
+
+    SNAPSHOT_MAX_AGE = 600
+
+    # --- helpers -------------------------------------------------------------
+
+    def snapshot_dir(self):
+        return os.path.join(self.data_dir, "dashboard-snapshots")
+
+    def take_snapshot(self):
+        status, body = self.client.post("/api/snapshots", {})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(os.path.dirname(body["path"]), self.snapshot_dir())
+        self.assertTrue(os.path.isfile(body["path"]))
+        self.assertGreater(body["bytes"], 0)
+        return body["path"]
+
+    @staticmethod
+    def q(path):
+        return urllib.parse.quote(path, safe="")
+
+    def own_obs(self, tag, session_id=S1):
+        status, body = self.api.post("/observations", {
+            "session_id": session_id, "project": PROJECT, "type": "decision",
+            "title": f"Obs destructiva {tag}",
+            "content": f"contenido destructivo unico {tag}"})
+        assert status == 201, body
+        return body["id"]
+
+    def own_prompt(self, tag, session_id=S1):
+        status, body = self.api.post("/prompts", {
+            "session_id": session_id, "project": PROJECT,
+            "content": f"prompt destructivo unico {tag}"})
+        assert status == 201, body
+        return body["id"]
+
+    def own_session(self, tag):
+        sid = "sess-" + tag
+        status, body = self.api.post("/sessions", {
+            "id": sid, "project": PROJECT, "directory": "/tmp/" + sid})
+        assert status == 201, body
+        return sid
+
+    def prompt_ids(self):
+        status, body = self.client.get(
+            f"/api/prompts?project={PROJECT}&limit=200")
+        self.assertEqual(status, 200, body)
+        return [p["id"] for p in body["prompts"]]
+
+    def session_ids(self):
+        status, body = self.client.get(
+            f"/api/sessions/recent?project={PROJECT}&limit=200")
+        self.assertEqual(status, 200, body)
+        return [s["id"] for s in body["sessions"]]
+
+    def obs_exists(self, obs_id):
+        return self.client.get(f"/api/observations/{obs_id}")[0] == 200
+
+    # --- snapshots -----------------------------------------------------------
+
+    def test_snapshot_writes_global_export(self):
+        path = self.take_snapshot()
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        self.assertIn("observations", payload)
+        self.assertIn("exported_at", payload)
+        # Export global: incluye la semilla del proyecto y lo que otros tests crearon.
+        titles = {o["title"] for o in payload["observations"]}
+        self.assertIn(OBS_A["title"], titles)
+        self.assertGreaterEqual(len(payload["observations"]), 4)
+
+    def test_snapshot_requires_reachable_engine(self):
+        directory = self.snapshot_dir()
+        before = set(os.listdir(directory)) if os.path.isdir(directory) else set()
+        dead = free_port()
+        cfg = Config(host="127.0.0.1", port=free_port(), engram_bin=ENGRAM_BIN,
+                     engram_api=f"http://127.0.0.1:{dead}",
+                     data_dir=self.data_dir)
+        httpd = create_server(cfg)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            client = Http(f"http://127.0.0.1:{httpd.server_address[1]}")
+            status, body = client.post("/api/snapshots", {})
+            self.assertEqual(status, 502)
+            self.assertIn("error", body)
+            # Un motor caído no deja archivos a medias.
+            after = set(os.listdir(directory)) if os.path.isdir(directory) else set()
+            self.assertEqual(after, before)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    # --- observaciones: soft vs hard -----------------------------------------
+
+    def test_soft_delete_does_not_require_snapshot(self):
+        obs_id = self.own_obs("soft-sin-snapshot")
+        status, body = self.client.delete(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}")
+        self.assertEqual(status, 200, body)
+        self.assertFalse(body["hard_delete"])
+        self.assertFalse(self.obs_exists(obs_id))
+
+    def test_hard_delete_removes_observation_permanently(self):
+        obs_id = self.own_obs("hard")
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}"
+            f"&hard=true&snapshot={self.q(snap)}")
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["hard_delete"])
+        self.assertFalse(self.obs_exists(obs_id))
+
+    def test_hard_delete_also_purges_a_soft_deleted_observation(self):
+        obs_id = self.own_obs("purga")
+        status, body = self.client.delete(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}")
+        self.assertEqual(status, 200, body)
+        self.assertFalse(body["hard_delete"])
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}"
+            f"&hard=true&snapshot={self.q(snap)}")
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["hard_delete"])
+        self.assertFalse(self.obs_exists(obs_id))
+
+    def test_hard_delete_without_snapshot_is_refused(self):
+        obs_id = self.own_obs("hard-sin-snapshot")
+        status, body = self.client.delete(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}&hard=true")
+        self.assertEqual(status, 403, body)
+        self.assertIn("snapshot", body["error"].lower())
+        self.assertTrue(self.obs_exists(obs_id))
+
+    def test_hard_delete_refuses_snapshot_outside_snapshot_dir(self):
+        obs_id = self.own_obs("hard-snapshot-ajeno")
+        status, body = self.client.delete(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}"
+            f"&hard=true&snapshot={self.q('/etc/hostname')}")
+        self.assertEqual(status, 403, body)
+        self.assertIn("snapshot", body["error"].lower())
+        self.assertTrue(self.obs_exists(obs_id))
+
+    def test_hard_delete_refuses_stale_snapshot(self):
+        obs_id = self.own_obs("hard-snapshot-viejo")
+        snap = self.take_snapshot()
+        old = time.time() - (self.SNAPSHOT_MAX_AGE + 60)
+        os.utime(snap, (old, old))
+        status, body = self.client.delete(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}"
+            f"&hard=true&snapshot={self.q(snap)}")
+        self.assertEqual(status, 403, body)
+        self.assertIn("snapshot", body["error"].lower())
+        self.assertTrue(self.obs_exists(obs_id))
+
+    def test_hard_delete_requires_expected_project(self):
+        obs_id = self.own_obs("hard-sin-proyecto")
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/observations/{obs_id}?hard=true&snapshot={self.q(snap)}")
+        self.assertEqual(status, 400, body)
+        self.assertIn("expected_project", body["error"])
+        self.assertTrue(self.obs_exists(obs_id))
+
+    def test_hard_flag_rejects_non_boolean_value(self):
+        obs_id = self.own_obs("hard-invalido")
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}"
+            f"&hard=quizas&snapshot={self.q(snap)}")
+        self.assertEqual(status, 400, body)
+        self.assertIn("hard", body["error"].lower())
+        self.assertTrue(self.obs_exists(obs_id))
+
+    # --- prompts -------------------------------------------------------------
+
+    def test_prompt_list_shows_seeded_prompt(self):
+        pid = self.own_prompt("listado")
+        self.assertIn(pid, self.prompt_ids())
+
+    def test_prompt_delete_is_permanent(self):
+        pid = self.own_prompt("borrado")
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/prompts/{pid}?snapshot={self.q(snap)}")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["status"], "deleted")
+        self.assertNotIn(pid, self.prompt_ids())
+
+    def test_prompt_delete_requires_snapshot(self):
+        pid = self.own_prompt("sin-snapshot")
+        status, body = self.client.delete(f"/api/prompts/{pid}")
+        self.assertEqual(status, 403, body)
+        self.assertIn("snapshot", body["error"].lower())
+        self.assertIn(pid, self.prompt_ids())
+
+    def test_prompt_delete_unknown_is_404(self):
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/prompts/999999?snapshot={self.q(snap)}")
+        self.assertEqual(status, 404, body)
+        self.assertIn("error", body)
+
+    # --- sesiones ------------------------------------------------------------
+
+    def test_empty_session_delete_is_permanent(self):
+        sid = self.own_session("vacia")
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/sessions/{sid}?snapshot={self.q(snap)}")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["status"], "deleted")
+        self.assertNotIn(sid, self.session_ids())
+
+    def test_session_with_observations_is_refused_with_409(self):
+        sid = self.own_session("conobs")
+        self.own_obs("en-sesion", session_id=sid)
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/sessions/{sid}?snapshot={self.q(snap)}")
+        self.assertEqual(status, 409, body)
+        self.assertIn("observation", body["error"])
+        self.assertIn(sid, self.session_ids())
+
+    def test_session_delete_requires_snapshot(self):
+        sid = self.own_session("sin-snapshot")
+        status, body = self.client.delete(f"/api/sessions/{sid}")
+        self.assertEqual(status, 403, body)
+        self.assertIn("snapshot", body["error"].lower())
+        self.assertIn(sid, self.session_ids())
 
 
 if __name__ == "__main__":

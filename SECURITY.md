@@ -6,7 +6,11 @@ Este dashboard está pensado para consultar y gestionar una instalación local d
 
 El navegador accede al frontend y a las rutas `/api/*` enumeradas en `server.py`. El backend reenvía esas operaciones a `ENGRAM_API`, sirve únicamente los archivos estáticos permitidos y calcula algunos agregados. Engram gestiona sus datos; el dashboard no accede directamente a SQLite.
 
-Las únicas escrituras expuestas son PATCH y DELETE de una observación. La UI envía `expected_project`, que el proxy reenvía al motor. DELETE no añade una petición de borrado físico. El motor conserva la responsabilidad de validar el proyecto, el contenido y las credenciales que exija su API. Las vistas de relaciones y revisión son de solo lectura.
+Las escrituras expuestas son PATCH y DELETE de una observación, DELETE de prompts y de sesiones, y `POST /api/snapshots`. La UI envía `expected_project`, que el backend exige y reenvía al motor. Un DELETE de observación sin `hard=true` sigue siendo soft; con `hard=true` el backend exige además un `snapshot` válido antes de reenviar la orden. El borrado de prompts y de sesiones es permanente en el motor, que también responde `409` cuando la sesión todavía tiene observaciones.
+
+El `snapshot` es el export global del motor escrito por el backend en `<data_dir>/dashboard-snapshots/` (o en `ENGRAM_DASH_SNAPSHOT_DIR`). El backend comprueba que la ruta esté dentro de ese directorio, que el archivo exista, que tenga menos de 10 minutos y que su contenido parezca un export; no confía en un valor enviado por la interfaz. El motor conserva la responsabilidad de validar el proyecto, el contenido y las credenciales que exija su API. Las vistas de relaciones y revisión son de solo lectura.
+
+Un snapshot contiene memoria exportada en claro y merece la misma protección que el store: no lo muevas a un directorio sincronizado, compartido o versionado, y bórralo cuando ya no lo necesites. Tampoco es una copia de seguridad del archivo SQLite.
 
 El contenido de memorias, proyectos y respuestas del motor debe tratarse como no confiable. El render del detalle escapa HTML antes de aplicar un subconjunto de Markdown. Esta medida protege esa presentación concreta; no convierte las exportaciones, los textos copiados o todos los futuros usos del contenido en datos seguros para ejecutar.
 
