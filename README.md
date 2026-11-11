@@ -8,17 +8,29 @@ La versión de referencia del motor declarada por el código es **Engram 3.7.0**
 
 - Consultar el resumen global de memorias, sesiones y proyectos, la actividad de las últimas 24 horas, 7 días y 30 días, y la distribución por tipo en un radar con leyenda interactiva.
 - Explorar Memories de todos los proyectos o de uno concreto, buscar con el motor FTS de Engram y combinar filtros de tipo y sesión. El listado permite ordenar y avisa cuando la carga es parcial.
-- Abrir sesiones con su timeline de observaciones y proyectos con sus contadores y directorios asociados.
+- Abrir sesiones con su timeline de observaciones, borrar las sesiones sin observaciones y ver proyectos con sus contadores y directorios asociados.
+- Consultar los prompts recientes del ámbito en Prompts, con búsqueda visual por contenido y borrado permanente por fila.
 - Consultar relaciones entre observaciones y la cola de revisión en Salud. Esta vista es de solo lectura.
 - Leer el detalle de una memoria, copiar su ID o contenido, descargarla como Markdown o JSON y compartir su enlace local `#/memories/obs/<id>`.
-- Editar título, tipo y contenido, o eliminar una observación mediante borrado soft, con confirmación en la interfaz.
+- Editar título, tipo y contenido, ocultar una observación con borrado soft o eliminarla físicamente, con confirmación en la interfaz.
+- Eliminar un proyecto completo en cascada (soft u hard) desde Projects, con la elección de modo y los contadores reales del proyecto.
 - Consultar la versión y configuración del motor en System, ver el diagnóstico `doctor` y descargar el export JSON de un proyecto generado por Engram.
 
 El dashboard no crea observaciones, sesiones ni proyectos; tampoco juzga relaciones ni cambia estados de revisión. La creación y esas operaciones se realizan con las herramientas de Engram.
 
-### Borrado desde la API del dashboard
+### Borrado desde la interfaz y la API del dashboard
 
-La interfaz todavía expone solo el borrado soft de observaciones. El backend ya ofrece el resto de las operaciones del motor y las usa la suite de pruebas:
+La interfaz cubre hoy todas las operaciones de borrado del backend: soft de observaciones (drawer, «Ocultar») y, para toda acción irreversible, un modal común que genera un snapshot con `POST /api/snapshots` antes de habilitar la confirmación, muestra la ruta y el tamaño del archivo, exige tipear el id o el nombre exacto del proyecto y envía esa ruta en el parámetro `snapshot`:
+
+| Acción en la interfaz | Ruta que usa |
+| --- | --- |
+| Drawer de memoria · «Ocultar (soft)» | `DELETE /api/observations/{id}?expected_project=P` |
+| Drawer de memoria · «Borrar definitivamente (hard)» | `DELETE /api/observations/{id}?expected_project=P&hard=true&snapshot=RUTA` |
+| Prompts · «Eliminar» por fila | `DELETE /api/prompts/{id}?snapshot=RUTA` |
+| Sessions · «Eliminar» en sesiones con 0 observaciones | `DELETE /api/sessions/{id}?snapshot=RUTA` |
+| Projects · «Eliminar proyecto» (soft o hard) | `DELETE /api/projects/{name}[?hard=true]&snapshot=RUTA` |
+
+El resto de las rutas del backend quedan disponibles para la suite de pruebas y para uso directo:
 
 | Ruta | Efecto |
 | --- | --- |
@@ -178,7 +190,7 @@ Navegador
 
 La dirección predeterminada es loopback, pero `ENGRAM_DASH_HOST` permite cambiarla. Usar `0.0.0.0` u otra interfaz, un proxy de red o un túnel puede dar acceso a memorias, rutas locales, exportaciones y operaciones de escritura a otras personas. El servidor no añade autenticación de usuarios ni TLS. Mantén privados tanto el puerto del dashboard como el de Engram.
 
-La interfaz envía `expected_project` en PATCH y DELETE, y el backend lo reenvía al motor. Esa comprobación de propiedad no reemplaza el control de acceso. El borrado soft no tiene una acción de deshacer en el panel, y el borrado físico, el de prompts y el de sesiones son irreversibles: el motor no expone una papelera ni un restore por API. Por eso el backend exige un snapshot de export vigente antes de cualquiera de ellos y lo verifica él mismo. Conserva además una copia de seguridad de Engram antes de modificar datos importantes.
+La interfaz envía `expected_project` en PATCH y DELETE, y el backend lo reenvía al motor. Esa comprobación de propiedad no reemplaza el control de acceso. Ningún borrado del panel tiene una acción de deshacer: el soft deja la fila en el store sin mostrarla, y el borrado físico, el de prompts, el de sesiones y la cascada de proyecto son irreversibles: el motor no expone una papelera ni un restore por API. Por eso el backend exige un snapshot de export vigente antes de cualquiera de ellos y lo verifica él mismo; el modal de borrado irreversible repite esa exigencia del lado del cliente (snapshot antes de confirmar y nombre tipeado), pero es el backend quien valida la ruta y su frescura. Conserva además una copia de seguridad de Engram antes de modificar datos importantes.
 
 Los archivos descargados, el portapapeles, las capturas y los registros pueden contener memoria privada. El export de proyecto conserva el formato y las colecciones que devuelve Engram; no equivale a una copia de seguridad completa de SQLite. Consulta [SECURITY.md](SECURITY.md) para los límites de confianza y la comunicación de problemas.
 
@@ -192,8 +204,8 @@ Los archivos descargados, el portapapeles, las capturas y los registros pueden c
 - Sessions solicita las 200 sesiones más recientes del ámbito. El timeline de una sesión se construye con hasta 50000 observaciones de su proyecto.
 - Salud carga relaciones por páginas de 100 y aplica el filtro por tipo sobre las páginas cargadas. La cola de revisión solicita hasta 100 elementos. Si una observación referenciada no está en el índice cargado, el panel informa de ello.
 - El detalle muestra el contador de revisiones, pero no incluye una vista de versiones anteriores. El Markdown admite un subconjunto de encabezados, listas, negrita y código; no interpreta HTML del contenido.
-- `doctor` utiliza el proyecto seleccionado; sin selección puede reportar un proyecto desconocido. No hay una vista dedicada a prompts ni controles para administrar juicios o estados de revisión.
-- La interfaz todavía no expone el borrado físico, el de prompts, el de sesiones vacías ni la cascada de proyecto: por ahora esas operaciones existen solo en la API del backend. La cascada de proyecto no está disponible por HTTP en el motor y requerirá invocar su CLI.
+- `doctor` utiliza el proyecto seleccionado; sin selección puede reportar un proyecto desconocido. No hay controles para administrar juicios o estados de revisión.
+- Prompts lista los 200 prompts más recientes del ámbito, como Sessions hace con las sesiones; no filtra ni busca en el motor.
 - Un snapshot es el export global del motor, no una copia del store SQLite: cubre observaciones, sesiones y prompts que el export incluya, y no reemplaza un backup del archivo de base de datos.
 
 Los cambios pendientes de publicación se describen en [CHANGELOG.md](CHANGELOG.md).
