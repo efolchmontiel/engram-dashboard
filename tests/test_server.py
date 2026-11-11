@@ -915,6 +915,63 @@ class ProjectCascadeTests(DashboardFixture):
         self.assertEqual(status, 200)
         self.assertEqual(len(obs["observations"]), 1)
 
+    # --- caminos de error del CLI --------------------------------------------
+
+    def fake_bin(self, script):
+        """Dashboard con un binario de motor falso, para forzar fallos del CLI."""
+        path = os.path.join(self.data_dir, "fake-engram")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\n" + script)
+        os.chmod(path, 0o755)
+        cfg = Config(host="127.0.0.1", port=0, engram_bin=path,
+                     engram_api=self.api.base, data_dir=self.data_dir)
+        httpd = create_server(cfg)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return Http(f"http://127.0.0.1:{httpd.server_address[1]}")
+
+    def test_cascade_cli_failure_is_502_without_claiming_success(self):
+        name, _ = self.own_project("cli-falla")
+        snap = self.take_snapshot()
+        path = f"/api/projects/{name}?snapshot={self.q(snap)}"
+        # Salida no cero y salida cero sin el formato esperado.
+        for script in ('echo boom >&2; exit 3\n', 'echo "sin conteos"; exit 0\n'):
+            client = self.fake_bin(script)
+            status, body = client.delete(path)
+            self.assertEqual(status, 502, (script, body))
+            self.assertIn("no se declara éxito", body["error"])
+            self.assertNotIn("sessions", body)
+        # El CLI falso nunca tocó el store: el proyecto sigue entero.
+        status, obs = self.client.get("/api/observations?project=" + name)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(obs["observations"]), 1)
+
+    def test_cascade_error_output_is_bounded(self):
+        name, _ = self.own_project("cli-verboso")
+        snap = self.take_snapshot()
+        client = self.fake_bin(
+            'head -c 9000 /dev/zero | tr "\\0" "x" >&2; exit 4\n')
+        status, body = client.delete(
+            f"/api/projects/{name}?snapshot={self.q(snap)}")
+        self.assertEqual(status, 502, body)
+        self.assertIn("no se declara éxito", body["error"])
+        self.assertLessEqual(len(body["error"]), 600)
+
+    def test_cascade_refuses_help_shaped_project_name(self):
+        # El motor lista un proyecto "-h"; el CLI lo interpreta como ayuda y
+        # termina sin borrar. Nunca se declara éxito y la sesión sobrevive.
+        status, body = self.api.post("/sessions", {
+            "id": "sess-help", "project": "-h", "directory": "/tmp/sess-help"})
+        self.assertEqual(status, 201, body)
+        snap = self.take_snapshot()
+        status, body = self.client.delete(
+            f"/api/projects/-h?snapshot={self.q(snap)}")
+        self.assertEqual(status, 502, body)
+        self.assertNotIn("sessions", body)
+        status, _ = self.client.get("/api/sessions/sess-help")
+        self.assertEqual(status, 200)
+
 
 if __name__ == "__main__":
     unittest.main()
