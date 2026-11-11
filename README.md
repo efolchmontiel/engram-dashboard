@@ -26,10 +26,11 @@ La interfaz todavía expone solo el borrado soft de observaciones. El backend ya
 | `DELETE /api/observations/{id}?expected_project=P&hard=true&snapshot=RUTA` | Borrado físico. También purga una observación ya soft-borrada. |
 | `DELETE /api/prompts/{id}?snapshot=RUTA` | Borrado permanente del prompt. |
 | `DELETE /api/sessions/{id}?snapshot=RUTA` | Borrado permanente de la sesión; el motor responde `409` si todavía tiene observaciones. |
+| `DELETE /api/projects/{name}?snapshot=RUTA` | Borrado en cascada del proyecto ejecutando `engram delete project` con `ENGRAM_DATA_DIR` del dashboard; el nombre se valida contra el listado del motor. En ambos modos borra los prompts de forma permanente; con `hard=true` elimina también las sesiones. |
 | `POST /api/snapshots` | Escribe el export global del motor en `<data_dir>/dashboard-snapshots/` y devuelve su ruta. |
 | `GET /api/prompts?project=P` (o `all_projects=true`) | Lista los prompts recientes del ámbito. |
 
-Todo borrado irreversible exige el parámetro `snapshot` con la ruta de un snapshot del propio directorio del dashboard, con menos de 10 minutos de antigüedad. El backend verifica esa ruta y la frescura antes de reenviar la orden: no depende de lo que muestre la interfaz. El borrado soft no requiere snapshot.
+Todo borrado irreversible exige el parámetro `snapshot` con la ruta de un snapshot del propio directorio del dashboard, con menos de 10 minutos de antigüedad. El backend verifica esa ruta y la frescura antes de reenviar la orden: no depende de lo que muestre la interfaz. El borrado soft no requiere snapshot. La cascada de proyecto corre el CLI del motor (`engram delete project`), no una ruta HTTP del motor, y en su modo soft ya borra los prompts de forma permanente.
 
 ## Requisitos e instalación
 

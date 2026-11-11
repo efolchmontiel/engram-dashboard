@@ -44,6 +44,14 @@ ACTIVITY_DAYS = 30
 SNAPSHOT_SUBDIR = "dashboard-snapshots"
 SNAPSHOT_MAX_AGE_SECONDS = 600
 
+# Salida esperada del CLI: Project "NAME" ... N observation(s), M prompt(s), K session(s)
+CLI_PROJECT_COUNTS = re.compile(
+    r"(?P<observations>\d+)\s+observation(?:\(s\))?,\s*"
+    r"(?P<prompts>\d+)\s+prompt(?:\(s\))?,\s*"
+    r"(?P<sessions>\d+)\s+session(?:\(s\))?")
+CLI_OUTPUT_MAX_CHARS = 500
+CLI_ERROR_TAIL_MAX_CHARS = 300
+
 
 @dataclass
 class Config:
@@ -362,6 +370,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.delete_permanent(
                 f"/sessions/{urllib.parse.quote(m.group(1))}", q)
 
+        m = re.fullmatch(r"/api/projects/(.+)", parsed.path)
+        if m:
+            return self.delete_project(urllib.parse.unquote(m.group(1)), q)
+
         return self.send_json(404, {"error": "no encontrado"})
 
     # --- borrados -------------------------------------------------------------
@@ -420,6 +432,64 @@ class Handler(BaseHTTPRequestHandler):
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "max_age_seconds": SNAPSHOT_MAX_AGE_SECONDS,
         })
+
+    def delete_project(self, name: str, q: dict):
+        """Cascada de proyecto vía el CLI `engram delete project <name> [--hard]`.
+
+        El motor no expone el borrado de proyecto por HTTP y el CLI soft
+        también borra los prompts de forma permanente: ambos modos exigen
+        un snapshot vigente. El nombre se valida contra el listado de
+        proyectos del motor antes de ejecutar ningún subprocess.
+        """
+        status, body = self.upstream("GET", "/projects")
+        if status is None:
+            return self.send_json(502, {"error": "API de Engram no accesible"})
+        if status != 200:
+            return self.send_json(status, body if body is not None else {})
+        known = {p.get("name") for p in map_projects(body)}
+        if name not in known:
+            return self.send_json(400, {
+                "error": f"El proyecto '{name}' no aparece en el listado de "
+                         "proyectos del motor: no se ejecuta la cascada"})
+        hard, err = self._bool_param(q, "hard")
+        if err:
+            return self.send_json(400, {"error": err})
+        problem = self._snapshot_problem(q.get("snapshot"))
+        if problem:
+            return self.send_json(403, {"error": problem})
+        cmd = [self.config.engram_bin, "delete", "project", name]
+        if hard:
+            cmd.append("--hard")
+        env = dict(os.environ, ENGRAM_DATA_DIR=self.config.data_dir)
+        try:
+            result = subprocess.run(cmd, env=env, cwd=self.config.data_dir,
+                                    capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return self.send_json(502, {
+                "error": "El comando 'engram delete project' no terminó en 60 s: "
+                         "no se sabe qué efectos parciales pudo dejar en el store; "
+                         "no se declara éxito"})
+        if result.returncode != 0:
+            tail = (result.stderr or "").strip()[-CLI_ERROR_TAIL_MAX_CHARS:]
+            return self.send_json(502, {
+                "error": f"El comando 'engram delete project' terminó con código "
+                         f"{result.returncode}: {tail}. No se sabe qué efectos "
+                         f"parciales pudo dejar en el store; no se declara éxito"})
+        output = (result.stdout or "").strip()
+        counts = CLI_PROJECT_COUNTS.search(output)
+        if not counts:
+            return self.send_json(502, {
+                "error": "El comando del motor terminó sin el formato esperado "
+                         "'N observation(s), M prompt(s), K session(s)': "
+                         "no se declara éxito",
+                "cli_output": output[:CLI_OUTPUT_MAX_CHARS]})
+        return self.send_json(200, {
+            "project": name,
+            "hard": hard,
+            "observations": int(counts.group("observations")),
+            "prompts": int(counts.group("prompts")),
+            "sessions": int(counts.group("sessions")),
+            "cli_output": output[:CLI_OUTPUT_MAX_CHARS]})
 
     def _bool_param(self, q: dict, name: str):
         raw = q.get(name)
