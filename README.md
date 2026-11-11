@@ -62,15 +62,6 @@ Reutiliza la API si `/health` responde 200; si no, lanza `engram serve` y aborta
 
 `ENGRAM_DATA_DIR` no cambia los datos de una API que ya está corriendo. Para aislar el dashboard, fijá también `ENGRAM_API` hacia otro motor y un `ENGRAM_DASH_PORT` distinto.
 
-## Pruebas
-
-```sh
-env -u ENGRAM_HTTP_TOKEN PYTHONDONTWRITEBYTECODE=1 \
-  ENGRAM_BIN=/ruta/al/engram python3 -m unittest tests.test_server
-```
-
-Levantan un Engram real con datos y puertos efímeros. Cubren lectura, búsqueda, agregados, errores, edición con `expected_project`, snapshots y los rechazos de borrado irreversible sin snapshot vigente. `ENGRAM_EXPECTED_VERSION` debe coincidir con `server.VERIFIED_ENGRAM_VERSION` (`3.7.0`): cambiarlo solo no declara compatible otro motor. Procedimiento en [CONTRIBUTING.md](CONTRIBUTING.md).
-
 ## Seguridad
 
 Loopback, sin autenticación ni TLS: exponer otra interfaz, un proxy o un túnel da acceso a memorias y a escrituras. Ningún borrado del panel se puede deshacer, y el backend exige el snapshot aunque un cliente se saltee el modal. Un snapshot es memoria exportada en claro y no reemplaza un backup del store SQLite. Límites de confianza y reporte de problemas en [SECURITY.md](SECURITY.md).
@@ -87,6 +78,12 @@ Loopback, sin autenticación ni TLS: exponer otra interfaz, un proxy o un túnel
 ## Arranque automático y acceso de escritorio (opcional)
 
 `deploy/engram-dashboard.service` es una unidad de usuario: ajustá `WorkingDirectory` y `ExecStart` a tu copia (por omisión `~/.local/share/engram-dashboard-local`) y activala con `systemctl --user enable --now engram-dashboard.service`. Con Omarchy: `omarchy webapp install Engram http://127.0.0.1:7438 "$PWD/icon.png"`.
+
+## Créditos
+
+Construido sobre [engram-dashboard-local](https://github.com/eSagraAI/engram-dashboard-local) de eSagra ([@eSagraAI](https://github.com/eSagraAI)): el dashboard original —backend con la librería estándar de Python, frontend sin dependencias, `run.sh`, tests, deploy y docs— viene de ahí. Gracias a eSagra por publicarlo.
+
+Agregado en este fork: la superficie de borrado con snapshots de export obligatorios, la cascada de proyecto por CLI, la edición de `scope` y `topic_key`, el sondeo de health, el fallback de puerto, la apertura automática del navegador, la paleta rosa y los tests que cubren todo eso.
 
 ## Licencia
 
