@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,11 +34,15 @@ STATIC_FILES = {"index.html", "app.js", "app.css", "favicon.svg"}
 
 # Versión del motor contra la que está verificado el dashboard (única fuente:
 # los tests comparan con ella y la UI avisa cuando el motor se sale de aquí).
-VERIFIED_ENGRAM_VERSION = "3.2.1"
+VERIFIED_ENGRAM_VERSION = "3.7.0"
 DEFAULT_LIMIT = 1000
 MAX_LIMIT = 50000
 OVERVIEW_LIMIT = 20000
 ACTIVITY_DAYS = 30
+
+# Snapshots de seguridad: un borrado irreversible exige uno vigente.
+SNAPSHOT_SUBDIR = "dashboard-snapshots"
+SNAPSHOT_MAX_AGE_SECONDS = 600
 
 
 @dataclass
@@ -47,6 +52,11 @@ class Config:
     engram_bin: str
     engram_api: str
     data_dir: str
+
+    def snapshot_dir(self) -> str:
+        """Directorio donde el dashboard escribe sus snapshots de export."""
+        return (os.environ.get("ENGRAM_DASH_SNAPSHOT_DIR")
+                or os.path.join(self.data_dir, SNAPSHOT_SUBDIR))
 
 
 def map_projects(body) -> list:
@@ -283,6 +293,26 @@ class Handler(BaseHTTPRequestHandler):
                 "limit": limit,
                 "truncated": len(sessions) >= limit})
 
+        if path == "/api/prompts":
+            scope_params = self._scope_params(q)
+            if not scope_params:
+                return self.send_json(400, {
+                    "error": "Parámetro 'project' requerido (o 'all_projects=true')"})
+            limit = clamp_int(q.get("limit"), 1, 500, 100)
+            params = dict(scope_params, limit=str(limit))
+            status, body = self.upstream(
+                "GET", "/prompts/recent" + self._query(params))
+            if status is None:
+                return self.send_json(502, {"error": "API de Engram no accesible"})
+            if status != 200:
+                return self.send_json(status, body)
+            prompts = body or []
+            return self.send_json(200, {
+                "prompts": prompts,
+                "scope": "all" if "all_projects" in scope_params else "project",
+                "limit": limit,
+                "truncated": len(prompts) >= limit})
+
         if path == "/api/overview":
             return self.overview()
 
@@ -307,13 +337,124 @@ class Handler(BaseHTTPRequestHandler):
         expected_project = self._qs(self.query(), ["expected_project"])
         return self.proxy("PATCH", f"/observations/{m.group(1)}" + expected_project, payload)
 
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/snapshots":
+            # El cuerpo se ignora: el snapshot es siempre el export global.
+            self.read_body()
+            return self.create_snapshot()
+        return self.send_json(404, {"error": "no encontrado"})
+
     def do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
+        q = self.query()
+
         m = re.fullmatch(r"/api/observations/(\d+)", parsed.path)
-        if not m:
-            return self.send_json(404, {"error": "no encontrado"})
-        expected_project = self._qs(self.query(), ["expected_project"])
-        return self.proxy("DELETE", f"/observations/{m.group(1)}" + expected_project)
+        if m:
+            return self.delete_observation(m.group(1), q)
+
+        m = re.fullmatch(r"/api/prompts/(\d+)", parsed.path)
+        if m:
+            return self.delete_permanent(f"/prompts/{m.group(1)}", q)
+
+        m = re.fullmatch(r"/api/sessions/([^/]+)", parsed.path)
+        if m:
+            return self.delete_permanent(
+                f"/sessions/{urllib.parse.quote(m.group(1))}", q)
+
+        return self.send_json(404, {"error": "no encontrado"})
+
+    # --- borrados -------------------------------------------------------------
+
+    def delete_observation(self, obs_id: str, q: dict):
+        """Soft por defecto; `hard=true` es irreversible y exige snapshot."""
+        expected = (q.get("expected_project") or "").strip()
+        if not expected:
+            return self.send_json(400, {
+                "error": "Parámetro 'expected_project' requerido: el motor exige la "
+                         "comprobación de propiedad para borrar una observación"})
+        hard, err = self._bool_param(q, "hard")
+        if err:
+            return self.send_json(400, {"error": err})
+        if hard:
+            problem = self._snapshot_problem(q.get("snapshot"))
+            if problem:
+                return self.send_json(403, {"error": problem})
+        params = {"expected_project": expected}
+        if hard:
+            params["hard"] = "true"
+        return self.proxy("DELETE", f"/observations/{obs_id}" + self._query(params))
+
+    def delete_permanent(self, path_query: str, q: dict):
+        """Prompts y sesiones: el motor solo los borra de forma permanente."""
+        problem = self._snapshot_problem(q.get("snapshot"))
+        if problem:
+            return self.send_json(403, {"error": problem})
+        return self.proxy("DELETE", path_query)
+
+    def create_snapshot(self):
+        """Export global del motor escrito a disco antes de un borrado irreversible."""
+        status, body = self.upstream("GET", "/export?all_projects=true")
+        if status is None:
+            return self.send_json(502, {"error": "API de Engram no accesible"})
+        if status != 200:
+            return self.send_json(status, body if body is not None else {})
+        directory = self.config.snapshot_dir()
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except OSError as e:
+            return self.send_json(500, {
+                "error": f"No se pudo crear el directorio de snapshots {directory}: {e}"})
+        raw = json.dumps(body, ensure_ascii=False).encode()
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        path = os.path.join(directory, f"engram-export-{stamp}.json")
+        try:
+            with open(path, "wb") as f:
+                f.write(raw)
+        except OSError as e:
+            return self.send_json(500, {"error": f"No se pudo escribir {path}: {e}"})
+        return self.send_json(200, {
+            "path": path,
+            "bytes": len(raw),
+            "exported_at": (body or {}).get("exported_at"),
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "max_age_seconds": SNAPSHOT_MAX_AGE_SECONDS,
+        })
+
+    def _bool_param(self, q: dict, name: str):
+        raw = q.get(name)
+        if raw is None or str(raw).strip() == "":
+            return False, None
+        value = str(raw).strip().lower()
+        if value in ("true", "1"):
+            return True, None
+        if value in ("false", "0"):
+            return False, None
+        return False, f"Parámetro '{name}' inválido: usá true o false"
+
+    def _snapshot_problem(self, raw) -> str:
+        """Devuelve el motivo por el que un snapshot no habilita un borrado, o ''."""
+        if not raw:
+            return ("Falta el parámetro 'snapshot': un borrado definitivo exige un "
+                    "snapshot del export generado por POST /api/snapshots")
+        directory = os.path.realpath(self.config.snapshot_dir())
+        path = os.path.realpath(os.path.abspath(str(raw)))
+        if os.path.dirname(path) != directory:
+            return "El 'snapshot' indicado no pertenece al directorio de snapshots del dashboard"
+        if not os.path.isfile(path):
+            return "El 'snapshot' indicado no existe: generá uno nuevo antes de borrar"
+        age = time.time() - os.path.getmtime(path)
+        if age > SNAPSHOT_MAX_AGE_SECONDS:
+            return (f"El snapshot tiene {int(age)} s y el máximo es "
+                    f"{SNAPSHOT_MAX_AGE_SECONDS} s: generá uno nuevo")
+        try:
+            with open(path, "rb") as f:
+                head = f.read(4096)
+        except OSError:
+            return "El 'snapshot' indicado no se puede leer"
+        if b'"exported_at"' not in head and b'"observations"' not in head:
+            return "El 'snapshot' indicado no parece un export de Engram"
+        return ""
 
     # --- agregados -------------------------------------------------------------
 
