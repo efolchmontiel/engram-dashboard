@@ -89,6 +89,9 @@ function mdPreview(src, max = 200) {
 const KNOWN_TYPES = ["decision", "architecture", "bugfix", "config", "discovery",
   "learning", "pattern", "preference", "session_summary", "manual"];
 
+/* Los tres valores de ámbito que acepta el PATCH del motor. */
+const OBS_SCOPES = ["project", "personal", "global"];
+
 /* Etiqueta real siempre; color por tipo conocido, neutro si no está catalogado. */
 const badge = (type) => {
   const t = type || "other";
@@ -398,7 +401,13 @@ function editObservation(obs) {
           <div><label>Tipo</label>
             <select name="type">${types.map((t) =>
               `<option value="${esc(t)}" ${t === obs.type ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></div>
+          <div><label>Ámbito</label>
+            <select name="scope">${OBS_SCOPES.map((s) =>
+              `<option value="${esc(s)}" ${s === (obs.scope || "project") ? "selected" : ""}>${esc(s)}</option>`).join("")}</select></div>
         </div>
+        <div><label>Clave temática (topic_key)</label>
+          <input type="text" name="topic_key" value="${esc(obs.topic_key || "")}" spellcheck="false">
+          <div class="form-hint">Déjalo vacío para borrar la clave temática.</div></div>
         <div><label>Contenido</label>
           <textarea name="content" required>${esc(obs.content)}</textarea></div>
         <div class="drawer-actions">
@@ -420,6 +429,11 @@ function editObservation(obs) {
           title: fd.get("title").trim(),
           type: fd.get("type"),
           content: fd.get("content"),
+          scope: fd.get("scope"),
+          /* Vacío significa borrar el campo en el motor: null, nunca "". */
+          /* El motor limpia la clave con cadena vacía y rechaza null
+             ("at least one field is required"), así que no se manda null. */
+          topic_key: String(fd.get("topic_key") || "").trim(),
         },
       });
       toast("Memoria actualizada", "ok");
@@ -788,9 +802,11 @@ function wireRadial(root) {
   });
 }
 
-/* El radar no gira con la pestaña oculta ni con movimiento reducido. */
+/* El radar no gira con la pestaña oculta ni con movimiento reducido. Al volver
+   a ser visible se sondea la salud de inmediato, sin esperar al siguiente tick. */
 document.addEventListener("visibilitychange", () => {
   document.body.dataset.hidden = document.hidden ? "1" : "";
+  if (!document.hidden) pollHealth();
 });
 
 /* --- Memories ------------------------------------------------------------------ */
@@ -1243,6 +1259,9 @@ async function destructiveModal({
   let snapshotPath = null;
   let busy = false;
   let closed = false;
+  /* El cierre por navegación se suspende solo durante onSuccess(): route() lo
+     invocaría y destruiría el modal antes de mostrar el panel de resultado. */
+  let autoCloseSuspended = false;
   const releaseFocus = trapFocus(modal);
 
   const close = () => {
@@ -1253,7 +1272,11 @@ async function destructiveModal({
     releaseFocus();
     backdrop.remove();
   };
-  closeDestructiveModal = close;
+  /* route() cierra el modal abierto al navegar; durante onSuccess() la
+     suspensión evita que la recarga de vista lanzada por el flujo de éxito lo
+     cierre antes de pintar los contadores. Esc y el backdrop llaman a close()
+     directamente y no pasan por aquí. */
+  closeDestructiveModal = () => { if (!autoCloseSuspended) close(); };
   const onKey = (e) => {
     if (e.key === "Escape") { e.stopPropagation(); close(); }
   };
@@ -1298,7 +1321,14 @@ async function destructiveModal({
     const mode = modeChoice ? $("input[name='d-mode']:checked", modal).value : null;
     try {
       const data = await request(snapshotPath, mode);
-      if (!closed && onSuccess) onSuccess();
+      autoCloseSuspended = true;
+      try {
+        if (onSuccess) onSuccess();
+      } finally {
+        /* Restaurado antes de renderizar el panel: no hay await entre medias,
+           así que ningún evento puede cerrar el modal en ese hueco. */
+        autoCloseSuspended = false;
+      }
       if (closed) return;
       busy = false;
       modal.innerHTML = `
@@ -1770,6 +1800,35 @@ async function loadStatus() {
   }
 }
 
+/* --- sondeo de salud -------------------------------------------------------------------------- */
+
+/* GET /api/health reenvía /health del motor: { ok, engram: { status, version } }.
+   El sondeo mantiene la píldora lateral al día sin depender del refresco manual.
+   Con la pestaña oculta no se lanza petición y una en curso nunca se solapa con
+   la siguiente; un fallo degrada la píldora a estado offline sin propagar nada. */
+const HEALTH_POLL_MS = 15000;
+let healthPollTimer = null;
+let healthPollBusy = false;
+
+async function pollHealth() {
+  if (document.hidden || healthPollBusy) return;
+  healthPollBusy = true;
+  try {
+    const data = await api("/api/health");
+    const engine = (data && data.engram) || {};
+    setApiStatus(data.ok === true && engine.status === "ok", engine.version, state.compatible);
+  } catch {
+    setApiStatus(false);
+  } finally {
+    healthPollBusy = false;
+  }
+}
+
+function startHealthPolling() {
+  if (healthPollTimer) return;
+  healthPollTimer = setInterval(pollHealth, HEALTH_POLL_MS);
+}
+
 /* --- teclado ---------------------------------------------------------------------------------- */
 
 document.addEventListener("keydown", (e) => {
@@ -1849,4 +1908,5 @@ window.addEventListener("hashchange", route);
   await loadStatus();
   await route();
   fillProjectSelect().then(syncProjectSelect);
+  startHealthPolling();
 })();

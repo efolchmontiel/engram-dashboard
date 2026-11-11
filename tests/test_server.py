@@ -527,6 +527,27 @@ class MutationTests(DashboardFixture):
         _, bulk = self.client.get("/api/observations?project=" + PROJECT)
         self.assertNotIn(obs_id, [o["id"] for o in bulk["observations"]])
 
+    def test_patch_clears_topic_key_only_with_an_empty_string(self):
+        """El motor rechaza null y limpia con cadena vacía; la UI depende de eso."""
+        obs_id = self._own_obs("tema")
+        status, _ = self.client.patch(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}",
+            {"topic_key": "tema/clave"})
+        self.assertEqual(status, 200)
+        status, body = self.client.patch(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}",
+            {"topic_key": None})
+        self.assertEqual(status, 400, body)
+        status, after = self.client.get(f"/api/observations/{obs_id}")
+        self.assertEqual(after["topic_key"], "tema/clave")
+        status, body = self.client.patch(
+            f"/api/observations/{obs_id}?expected_project={PROJECT}",
+            {"topic_key": ""})
+        self.assertEqual(status, 200, body)
+        status, after = self.client.get(f"/api/observations/{obs_id}")
+        self.assertEqual(status, 200)
+        self.assertIsNone(after.get("topic_key"))
+
     def test_delete_rejects_wrong_expected_project_without_deleting(self):
         obs_id = self._own_obs("borrado-proyecto")
         status, _ = self.client.delete(
@@ -971,6 +992,93 @@ class ProjectCascadeTests(DashboardFixture):
         self.assertNotIn("sessions", body)
         status, _ = self.client.get("/api/sessions/sess-help")
         self.assertEqual(status, 200)
+
+
+class DeleteContractTests(unittest.TestCase):
+    """La interfaz no puede borrar de forma permanente sin snapshot (S3).
+
+    No hay runner de JS en este repo, así que el invariante se comprueba sobre
+    el fuente: toda llamada DELETE debe llevar `snapshot=` en su vecindario
+    salvo el borrado soft de una observación, que es el único exento.
+    """
+
+    APP_JS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "static", "app.js")
+    WINDOW = 4
+
+    def test_only_the_soft_observation_delete_skips_the_snapshot(self):
+        with open(self.APP_JS, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+
+        seen, offenders = [], []
+        for index, line in enumerate(lines):
+            if 'method: "DELETE"' not in line:
+                continue
+            seen.append(index + 1)
+            window = "\n".join(lines[max(0, index - self.WINDOW):index + 1])
+            if "snapshot=" not in window:
+                offenders.append((index + 1, line.strip()))
+
+        self.assertGreaterEqual(len(seen), 5, f"no se encontraron los DELETE esperados: {seen}")
+        self.assertEqual(len(offenders), 1,
+                         f"DELETE sin snapshot fuera del soft: {offenders}")
+        _lineno, soft = offenders[0]
+        self.assertIn("expected_project=", soft)
+        self.assertNotIn("hard=true", soft)
+
+
+class OpenBrowserTests(unittest.TestCase):
+    """La apertura del navegador no debe romper un arranque sin terminal."""
+
+    def test_opens_only_in_an_interactive_terminal(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ENGRAM_DASH_NO_OPEN", None)
+            self.assertTrue(server.should_open_browser(True))
+            self.assertFalse(server.should_open_browser(False))
+
+    def test_the_environment_variable_disables_it(self):
+        with mock.patch.dict(os.environ, {"ENGRAM_DASH_NO_OPEN": "1"}):
+            self.assertFalse(server.should_open_browser(True))
+
+
+class PortFallbackTests(unittest.TestCase):
+    """El dashboard no debe morir porque otro proceso tenga el puerto."""
+
+    def test_binds_the_next_free_port_when_the_configured_one_is_busy(self):
+        busy = free_port()
+        data_dir = tempfile.mkdtemp(prefix="engram-dash-port-")
+        self.addCleanup(shutil.rmtree, data_dir, ignore_errors=True)
+        with socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", busy))
+            occupied.listen(1)
+            config = Config(host="127.0.0.1", port=busy, engram_bin="engram",
+                            engram_api="http://127.0.0.1:1", data_dir=data_dir)
+            httpd, offset = server.bind_dashboard(config)
+            try:
+                self.assertGreaterEqual(offset, 1)
+                self.assertGreater(httpd.server_address[1], busy)
+                thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+                thread.start()
+                client = Http(f"http://127.0.0.1:{httpd.server_address[1]}")
+                status, _ = client.get("/api/nope")
+                self.assertEqual(status, 404)
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+
+    def test_binds_the_configured_port_when_it_is_free(self):
+        free = free_port()
+        data_dir = tempfile.mkdtemp(prefix="engram-dash-port-")
+        self.addCleanup(shutil.rmtree, data_dir, ignore_errors=True)
+        config = Config(host="127.0.0.1", port=free, engram_bin="engram",
+                        engram_api="http://127.0.0.1:1", data_dir=data_dir)
+        httpd, offset = server.bind_dashboard(config)
+        try:
+            self.assertEqual(offset, 0)
+            self.assertEqual(httpd.server_address[1], free)
+        finally:
+            # Nunca se sirvió: shutdown() esperaría a un serve_forever que no corre.
+            httpd.server_close()
 
 
 if __name__ == "__main__":

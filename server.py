@@ -686,6 +686,51 @@ def create_server(config: Config) -> DashServer:
     return DashServer(config)
 
 
+DASH_PORT_ATTEMPTS = 10
+
+
+def should_open_browser(stream_isatty: bool) -> bool:
+    """Abrir el navegador solo en terminal interactiva y si no se pidió lo contrario."""
+    if os.environ.get("ENGRAM_DASH_NO_OPEN"):
+        return False
+    return bool(stream_isatty)
+
+
+def open_dashboard(url: str) -> None:
+    """Abre la URL sin bloquear el arranque: si falla, el dashboard sirve igual."""
+    import threading
+    import webbrowser
+
+    def worker():
+        try:
+            webbrowser.open(url, new=2)
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def bind_dashboard(config: Config, attempts: int = DASH_PORT_ATTEMPTS):
+    """Devuelve `(server, offset)` usando el puerto pedido o el siguiente libre.
+
+    Otro proyecto puede tener ocupado el puerto por defecto (por ejemplo el motor
+    de engran de otro workspace), y el dashboard no debe morir por eso.
+    """
+    if config.port == 0:
+        return create_server(config), 0
+    last = None
+    for offset in range(attempts):
+        candidate = Config(host=config.host, port=config.port + offset,
+                           engram_bin=config.engram_bin,
+                           engram_api=config.engram_api,
+                           data_dir=config.data_dir)
+        try:
+            return create_server(candidate), offset
+        except OSError as e:
+            last = e
+    raise last
+
+
 def ensure_engram_api(engram_bin: str, api_base: str, data_dir: str):
     """Arranca `engram serve` si no hay ya una API viva; devuelve el Popen o None."""
     try:
@@ -734,15 +779,20 @@ def main():
 
     config = Config(host=host, port=port, engram_bin=engram_bin,
                     engram_api=api_base, data_dir=data_dir)
-    httpd = create_server(config)
+    httpd, offset = bind_dashboard(config)
+    config.port = httpd.server_address[1]
+    if offset:
+        print(f"[engram-dashboard] El puerto {port} está ocupado; usando {config.port}")
 
     def bye(*_):
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, bye)
     atexit.register(httpd.server_close)
 
-    print(f"[engram-dashboard] Dashboard en http://{host}:{port} "
+    print(f"[engram-dashboard] Dashboard en http://{host}:{config.port} "
           f"(datos: {data_dir})")
+    if should_open_browser(sys.stdout.isatty()):
+        open_dashboard(f"http://{host}:{config.port}")
     try:
         httpd.serve_forever()
     except (KeyboardInterrupt, SystemExit):
