@@ -689,6 +689,27 @@ def create_server(config: Config) -> DashServer:
 DASH_PORT_ATTEMPTS = 10
 
 
+def should_open_browser(stream_isatty: bool) -> bool:
+    """Abrir el navegador solo en terminal interactiva y si no se pidió lo contrario."""
+    if os.environ.get("ENGRAM_DASH_NO_OPEN"):
+        return False
+    return bool(stream_isatty)
+
+
+def open_dashboard(url: str) -> None:
+    """Abre la URL sin bloquear el arranque: si falla, el dashboard sirve igual."""
+    import threading
+    import webbrowser
+
+    def worker():
+        try:
+            webbrowser.open(url, new=2)
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def bind_dashboard(config: Config, attempts: int = DASH_PORT_ATTEMPTS):
     """Devuelve `(server, offset)` usando el puerto pedido o el siguiente libre.
 
@@ -770,6 +791,8 @@ def main():
 
     print(f"[engram-dashboard] Dashboard en http://{host}:{config.port} "
           f"(datos: {data_dir})")
+    if should_open_browser(sys.stdout.isatty()):
+        open_dashboard(f"http://{host}:{config.port}")
     try:
         httpd.serve_forever()
     except (KeyboardInterrupt, SystemExit):

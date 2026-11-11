@@ -67,7 +67,9 @@ También puedes usar `./run.sh 7440` para pedir un puerto concreto, o:
 python3 server.py
 ```
 
-Abre `http://127.0.0.1:7438`. Si ese puerto está ocupado por otro proceso —por ejemplo el motor de Engram de otro espacio de trabajo— el dashboard usa el siguiente libre y lo informa en la salida. El backend consulta `/health` en la API configurada. Si responde con HTTP 200, la reutiliza. Si no responde, intenta lanzar `engram serve` en el puerto de esa URL, espera a que esté disponible y aborta si no consigue arrancarlo.
+Abre `http://127.0.0.1:7438`. Si ese puerto está ocupado por otro proceso —por ejemplo el motor de Engram de otro espacio de trabajo— el dashboard usa el siguiente libre y lo informa en la salida; prueba hasta diez puertos consecutivos antes de abortar. Cuando lo arrancas desde una terminal interactiva también abre esa URL en el navegador; define `ENGRAM_DASH_NO_OPEN=1` para que solo imprima la dirección, y ten en cuenta que la apertura automática no ocurre cuando corre bajo systemd ni con la salida redirigida.
+
+El backend consulta `/health` en la API configurada. Si responde con HTTP 200, la reutiliza. Si no responde, intenta lanzar `engram serve` en el puerto de esa URL, espera a que esté disponible y aborta si no consigue arrancarlo.
 
 Con la configuración predeterminada, la API está en `http://127.0.0.1:7437` y Engram utiliza `~/.engram` para sus datos. La UI no abre SQLite directamente. Las ediciones y los borrados sí cambian la memoria a través de la API del motor.
 

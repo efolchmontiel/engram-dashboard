@@ -1027,6 +1027,20 @@ class DeleteContractTests(unittest.TestCase):
         self.assertNotIn("hard=true", soft)
 
 
+class OpenBrowserTests(unittest.TestCase):
+    """La apertura del navegador no debe romper un arranque sin terminal."""
+
+    def test_opens_only_in_an_interactive_terminal(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ENGRAM_DASH_NO_OPEN", None)
+            self.assertTrue(server.should_open_browser(True))
+            self.assertFalse(server.should_open_browser(False))
+
+    def test_the_environment_variable_disables_it(self):
+        with mock.patch.dict(os.environ, {"ENGRAM_DASH_NO_OPEN": "1"}):
+            self.assertFalse(server.should_open_browser(True))
+
+
 class PortFallbackTests(unittest.TestCase):
     """El dashboard no debe morir porque otro proceso tenga el puerto."""
 
