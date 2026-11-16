@@ -1,9 +1,9 @@
 /* ============================================================================
    Engram · local dashboard — "cinta solar" visual language
-   Replaces the mission-control (wine/pink) stylesheet.
    Source of truth: design/dashboard-radical/02-cinta-solar.html
-   Layout contract: #app is a flex column — #topbar, scrolling #view,
-   quiet #ticker strip, bottom command bar (.cmdbar) holding #nav.
+   Layout contract: #app is a flex row — #sidebar as a 222px sticky rail
+   (brand, Ctrl K pill, #nav, Proyectos, api status pinned at the bottom),
+   #main as the flexed column: #topbar, scrolling #view, quiet #ticker strip.
    ============================================================================ */
 
 /* --- 1. tokens ------------------------------------------------------------- */
@@ -115,16 +115,39 @@ mark {
   padding: 0 2px;
 }
 
-/* --- 4. app shell ---------------------------------------------------------- */
+/* --- 4. app shell: left rail + scrolling column ---------------------------- */
 
 #app {
   display: flex;
-  flex-direction: column;
-  height: 100vh;
-  min-height: 0;
+  min-height: 100vh;
 }
 
-/* Top bar: sticky hairline strip, slightly lifted so the wash shows through. */
+/* Left rail: hairline right border over a translucent surface. */
+#sidebar {
+  position: sticky;
+  top: 0;
+  width: 222px;
+  flex: 0 0 222px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 12px;
+  border-right: 1px solid var(--line);
+  background: rgba(12, 12, 14, .6);
+  overflow-y: auto;
+}
+
+/* Main column: fixed top bar, scrolling body, totals pinning the bottom. */
+#main {
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Top bar: hairline strip, slightly lifted so the wash shows through. */
 #topbar {
   flex: none;
   display: flex;
@@ -153,6 +176,7 @@ mark {
   align-items: center;
   gap: 12px;
   flex: none;
+  margin-left: auto;
 }
 
 #project-select {
@@ -165,21 +189,146 @@ mark {
   font: 11px var(--mono);
 }
 
-/* Brand block at the left edge of the top bar. */
+/* Brand block at the top of the rail. Flat chip, no glow. */
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   flex: none;
+  padding: 2px 6px 10px;
 }
 
-.brand svg { width: 20px; height: 20px; }
+.brand svg { width: 21px; height: 21px; }
 
 .brand-text { display: flex; align-items: center; gap: 8px; }
 
 .brand h1 {
-  font-size: 13.5px;
+  font-size: 14.5px;
+  letter-spacing: -.02em;
   color: var(--text);
+}
+
+/* Search: the Ctrl K affordance as a quiet sunken pill. */
+.searchbtn {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--sunk);
+  color: var(--faint);
+  font: 11.5px var(--sans);
+  cursor: pointer;
+  text-align: left;
+  transition: color .16s ease, border-color .16s ease;
+}
+
+.searchbtn:hover {
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+
+.searchbtn svg { width: 13px; height: 13px; flex: none; }
+
+.searchbtn kbd {
+  margin-left: auto;
+  font: 9px var(--mono);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+/* Sidebar grouped links: rows with a 2px accent bar for the active one. */
+.navgrp {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.navgrp > .eyebrow { padding: 0 8px 5px; }
+
+#nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+#nav a,
+.proj {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border-left: 2px solid transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  transition: background .14s ease, color .14s ease;
+}
+
+#nav a svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  fill: currentColor;
+}
+
+#nav a:hover,
+.proj:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, .045);
+  text-decoration: none;
+}
+
+#nav a.active,
+.proj.active {
+  color: var(--text);
+  background: var(--raised);
+  border-left-color: var(--accent);
+}
+
+#nav a.active svg { color: var(--accent); }
+
+/* Count pushed right, mono and faint. */
+#nav a .n,
+.proj .n {
+  margin-left: auto;
+  font: 10px var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+
+.proj .dot { width: 5px; height: 5px; flex: 0 0 5px; }
+.proj span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Rail footer: api status pinned at the bottom, above a hairline. */
+.side-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 8px 0;
+  border-top: 1px solid var(--line);
+  font: 600 9px var(--sans);
+  letter-spacing: var(--track);
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.side-foot .row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+#api-version {
+  font: 9.5px var(--mono);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
 }
 
 /* Scrolling body of every view. */
@@ -187,19 +336,20 @@ mark {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 20px 26px 44px;
+  padding: 18px 26px 40px;
   width: 100%;
-  max-width: 1560px;
+  max-width: 1320px;
   margin: 0 auto;
 }
 
-/* Ticker: one quiet hairline strip of mono figures above the command bar. */
+/* Ticker: one quiet hairline strip of mono figures at the bottom. */
 #ticker {
   flex: none;
   display: flex;
   align-items: center;
   gap: 26px;
-  padding: 8px 26px;
+  padding: 9px 26px;
+  background: rgba(12, 12, 14, .7);
   border-top: 1px solid var(--line);
   color: var(--faint);
   font: 600 9.5px var(--sans);
@@ -217,63 +367,6 @@ mark {
 }
 
 #ticker .sep { flex: 1; min-width: 8px; }
-
-/* Bottom command bar: hairline pills of nav, api status to the right. */
-.cmdbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 9px 26px;
-  border-top: 1px solid var(--line);
-  background: rgba(9, 9, 11, .92);
-  backdrop-filter: blur(12px);
-}
-
-#nav {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
-#nav a {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 12px;
-  border-radius: 99px;
-  color: var(--muted);
-  font: 600 10.5px var(--sans);
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  transition: color .16s ease, background .16s ease;
-}
-
-#nav a svg { width: 14px; height: 14px; fill: currentColor; }
-
-#nav a:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, .05);
-  text-decoration: none;
-}
-
-#nav a.active {
-  background: var(--text);
-  color: var(--bg);
-}
-
-.api-status {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--muted);
-  font: 600 10.5px var(--sans);
-  letter-spacing: .06em;
-}
-
-#api-version { color: var(--faint); }
 
 /* Status dots: flat, no glow. */
 .dot {
@@ -326,8 +419,7 @@ mark {
   width: 100%;
   height: auto;
   overflow: visible;
-  margin: 0 -6px;
-  padding: 0 6px;
+  margin: 0 -8px;
 }
 
 .wedge {
@@ -343,19 +435,49 @@ mark {
 }
 
 .wedge:focus-visible {
-  stroke: var(--accent);
+  stroke: var(--text);
   stroke-width: 2;
 }
 
-.wlabel,
-.wcount {
-  fill: var(--muted);
-  font: 600 10px var(--mono);
+/* Graduated rim: the hairline arc that frames the band like an instrument
+   dial, with its 5° ticks (every 30° stronger). Drawn by app.js. */
+.rim {
+  fill: none;
+  stroke: rgba(255, 255, 255, .10);
+}
+
+.tick {
+  stroke: rgba(255, 255, 255, .14);
+  stroke-width: 1;
+}
+
+/* Leader polylines for the narrow wedges: from the wedge rim to the stacked
+   label at the right edge. */
+.lead {
+  fill: none;
+  stroke: rgba(255, 255, 255, .22);
+  stroke-width: 1;
+}
+
+.wlabel {
+  fill: var(--body);
+  font: 500 9.5px var(--mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
   pointer-events: none;
   user-select: none;
 }
 
-.wcount { fill: var(--faint); }
+/* Leader label for the narrow wedges: quieter than the in-band labels. */
+.wlabel.small {
+  font-size: 9px;
+  fill: var(--muted);
+}
+
+.wcount {
+  fill: var(--faint);
+  font: 600 9.5px var(--mono);
+}
 
 /* The half-sun hole: the big numeral of the loaded scope (or of the hovered
    wedge, written by app.js). */
@@ -364,7 +486,7 @@ mark {
   left: 50%;
   bottom: 14px;
   transform: translateX(-50%);
-  width: 460px;
+  width: 420px;
   text-align: center;
   pointer-events: none;
 }
@@ -379,19 +501,49 @@ mark {
 
 .solar-hole .unit {
   display: block;
-  margin-top: 2px;
-  color: var(--faint);
-  font: 600 9.5px var(--sans);
+  margin-top: 8px;
+  color: var(--muted);
+  font: 600 9px var(--sans);
   letter-spacing: var(--track);
   text-transform: uppercase;
+}
+
+/* Share bar inside the hole: how much of the loaded scope the hovered or
+   selected wedge owns. The fill hue is set inline by app.js. */
+.solar-share {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 190px;
+  margin: 9px auto 0;
+}
+
+.solar-share .track {
+  flex: 1;
+  height: 3px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, .09);
+  overflow: hidden;
+}
+
+.solar-share .track i {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--accent);
+}
+
+.solar-share .v {
+  font: 9.5px var(--mono);
+  color: var(--faint);
+  white-space: nowrap;
 }
 
 /* Time-window control pinned to the band's bottom edge. */
 .windows {
   position: absolute;
-  left: 50%;
-  bottom: 0;
-  transform: translate(-50%, 50%);
+  right: 4px;
+  top: 0;
   display: flex;
   gap: 2px;
   padding: 3px;
@@ -420,33 +572,37 @@ mark {
   color: var(--bg);
 }
 
-/* Typehead: swatch, type name, and the loaded-scope fact line. */
+/* Typehead: swatch in the type hue, the type name at editorial scale and the
+   data line under it. */
 .typehead {
   display: flex;
-  align-items: baseline;
-  gap: 13px;
-  margin: 18px 0 10px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--line);
+  align-items: flex-end;
+  gap: 16px;
+  margin: 0 0 2px;
+  padding: 22px 0 12px;
+  border-bottom: 1px solid var(--line-strong);
 }
 
 .typehead .swatch {
-  width: 11px;
-  height: 11px;
+  width: 10px;
+  height: 10px;
   border-radius: 3px;
   flex: none;
-  align-self: center;
+  margin-bottom: 8px;
 }
 
 .typehead h1 {
-  font-size: 17px;
+  font-size: 27px;
+  line-height: 1.05;
+  font-weight: 730;
+  letter-spacing: -.035em;
   color: var(--text);
 }
 
 .typehead .fact {
-  margin-left: auto;
+  margin-top: 6px;
   color: var(--muted);
-  font: 11px var(--mono);
+  font: 10.5px var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -462,10 +618,10 @@ mark {
 
 .lrow {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) 150px 84px;
-  gap: 18px;
+  grid-template-columns: 54px minmax(0, 1fr) 176px 84px;
+  gap: 16px;
   align-items: center;
-  padding: 11px 4px;
+  padding: 11px 2px;
   border-bottom: 1px solid var(--line);
   cursor: pointer;
   transition: background .16s ease;
@@ -479,6 +635,7 @@ mark {
   font-variant-numeric: tabular-nums;
   align-self: start;
   padding-top: 2px;
+  white-space: nowrap;
 }
 
 .lrow .t {
@@ -516,6 +673,7 @@ mark {
 /* Type pill: hue is passed per row as --c by app.js. No color-mix: the tint
    is a ::before layer of the hue at low opacity behind the label. */
 .tpill {
+  justify-self: start;
   position: relative;
   isolation: isolate;
   display: inline-flex;
@@ -1385,7 +1543,7 @@ td .preview {
 #toasts {
   position: fixed;
   right: 18px;
-  bottom: 76px;
+  bottom: 56px;
   z-index: 70;
   display: flex;
   flex-direction: column;
@@ -1445,8 +1603,12 @@ body[data-hidden="1"] :is(#drawer, #modal, .destructive) {
   .grid.cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
+@media (max-width: 860px) {
+  #sidebar { display: none; }
+}
+
 @media (max-width: 760px) {
-  #topbar, #view, #ticker, .cmdbar { padding-left: 16px; padding-right: 16px; }
+  #topbar, #view, #ticker { padding-left: 16px; padding-right: 16px; }
 
   .grid, .grid.cols-3, .grid.cols-2 { grid-template-columns: minmax(0, 1fr); }
 

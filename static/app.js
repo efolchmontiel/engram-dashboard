@@ -501,12 +501,16 @@ const fmtPct = (n, d) => (d ? `${pct(n, d).toFixed(1).replace(/\.0$/, "")}%` : "
    Misma regla de acotado (9 + otros) que tenía el radial. */
 const SOLAR_MAX = 9;
 
-/* Geometría de la banda elíptica: centro (620, 300), radios exteriores
+/* Geometría de la banda elíptica: centro (620, 320), radios exteriores
    (600, 252) e interiores (322, 104); las cuñas van de 180° a 360°, cada una
-   con un pequeño hueco angular para que las vecinas nunca se toquen. */
+   con un pequeño hueco angular para que las vecinas nunca se toquen. El
+   viewBox se abre a la derecha (-30 0 1380 320) para el carril de etiquetas
+   con línea guía; rim y ticks viven 14 px afuera de la banda. */
 const SOLAR_GEO = {
-  cx: 620, cy: 300, rxo: 600, ryo: 252, rxi: 322, ryi: 104,
-  gap: 0.8, labelRx: 462, labelRy: 178, minLabelDeg: 15,
+  cx: 620, cy: 320, rxo: 600, ryo: 252, rxi: 322, ryi: 104,
+  gap: 0.9, labelRx: 452, labelRy: 178, minLabelDeg: 15,
+  rim: 14, tickMinor: 19, tickMajor: 24,
+  leadOut: 12, rightCol: 1266, leadGap: 15,
 };
 
 function solarPt(rx, ry, deg) {
@@ -552,16 +556,53 @@ function solarWindows() {
   </div>`;
 }
 
+/* Rim graduado y ticks cada 5°: el instrumento antes que el dato. */
+function solarRim() {
+  const f = (n) => n.toFixed(2);
+  const r = SOLAR_GEO;
+  const rim = `<path class="rim" d="M${f(r.cx - r.rxo - r.rim)} ${f(r.cy)}A${f(r.rxo + r.rim)} ${f(r.ryo + r.rim)} 0 0 1 ${f(r.cx + r.rxo + r.rim)} ${f(r.cy)}"/>`;
+  const ticks = [];
+  for (let deg = 180; deg <= 360; deg += 5) {
+    const major = deg % 30 === 0;
+    const out = major ? r.tickMajor : r.tickMinor;
+    const [x1, y1] = solarPt(r.rxo + r.rim, r.ryo + r.rim, deg);
+    const [x2, y2] = solarPt(r.rxo + out, r.ryo + out, deg);
+    ticks.push(`<line class="tick" x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" opacity="${major ? "0.85" : "0.4"}"/>`);
+  }
+  return rim + ticks.join("");
+}
+
+/* Viñeta: curvatura de la banda. El path se dibuja después de las cuñas y
+   sus etiquetas internas, y antes de las etiquetas con línea guía para que
+   no las cubra. */
+const solarVigDefs = `<defs><radialGradient id="solar-vig" cx="50%" cy="100%" r="100%">
+    <stop offset="55%" stop-color="rgba(9,9,11,0)"/>
+    <stop offset="100%" stop-color="rgba(9,9,11,.4)"/>
+  </radialGradient></defs>`;
+const solarVignette = `<path d="M0 0H1380V320H0Z" fill="url(#solar-vig)" pointer-events="none"/>`;
+
 function renderSolar(byType, total, selected) {
   const { wedges, all } = solarBuckets(byType);
   const breakdown = all.map(([t, c]) => `${t} ${c}`).join(", ") || "sin tipos";
-  const hole = `<div class="solar-hole">
+  /* El hueco muestra el tipo seleccionado (número, unidad y barra de
+     participación); sin cuñas muestra el agregado del ámbito cargado. */
+  const sel = wedges.find(([t]) => t === selected);
+  const hole = sel
+    ? `<div class="solar-hole">
+      <div class="num" data-hole-num>${sel[1]}</div>
+      <div class="unit" data-hole-unit>${esc(sel[0].replace(/_/g, " "))}</div>
+      <div class="solar-share">
+        <span class="track"><i data-hole-bar style="width:${pct(sel[1], total).toFixed(1)}%;background:${typeColor(sel[0])}"></i></span>
+        <span class="v" data-hole-pct>${fmtPct(sel[1], total)}</span>
+      </div>
+    </div>`
+    : `<div class="solar-hole">
       <div class="num" data-hole-num>${total}</div>
       <div class="unit" data-hole-unit>${esc(scopeLabel())}</div>
     </div>`;
   if (!wedges.length) {
     return `<div class="solar">
-      <svg class="band" viewBox="0 0 1240 300" role="img" aria-label="Sin observaciones activas en el ámbito."></svg>
+      <svg class="band" viewBox="-30 0 1380 320" role="img" aria-label="Sin observaciones activas en el ámbito."></svg>
       ${hole}
       ${solarWindows()}
     </div>`;
@@ -570,6 +611,7 @@ function renderSolar(byType, total, selected) {
   const usable = 180 - n * SOLAR_GEO.gap;
   let a = 180;
   const parts = [];
+  const leads = [];
   for (const [type, count] of wedges) {
     const span = total ? (count / total) * usable : 0;
     const a0 = a + SOLAR_GEO.gap / 2;
@@ -589,13 +631,40 @@ function renderSolar(byType, total, selected) {
       const [lx, ly] = solarPt(SOLAR_GEO.labelRx, SOLAR_GEO.labelRy, mid);
       parts.push(`<text class="wlabel" x="${lx.toFixed(2)}" y="${ly.toFixed(2)}"
         text-anchor="middle" dominant-baseline="middle">${esc(name)} <tspan class="wcount">${count}</tspan></text>`);
+    } else {
+      /* Cuña angosta: línea guía hacia el carril derecho, sin etiqueta en la
+         banda; el anclaje sale del punto medio del borde exterior. */
+      const mid = (a0 + a1) / 2;
+      const [ax, ay] = solarPt(SOLAR_GEO.rxo, SOLAR_GEO.ryo, mid);
+      const [bx, by] = solarPt(SOLAR_GEO.rxo + SOLAR_GEO.leadOut, SOLAR_GEO.ryo + SOLAR_GEO.leadOut, mid);
+      leads.push({ type, count, ax, ay, bx, by });
     }
     a += span;
   }
+  /* Etiquetas con línea guía: se ordenan por y y se empujan hacia abajo para
+     sostener un mínimo de 15 px entre vecinas, sin tocarse nunca. */
+  const leadHtml = (() => {
+    if (!leads.length) return "";
+    const f = (n) => n.toFixed(2);
+    const R = SOLAR_GEO.rightCol;
+    leads.sort((p, q) => p.by - q.by);
+    let lastY = -Infinity;
+    return leads.map((l) => {
+      const y = Math.max(l.by, lastY + SOLAR_GEO.leadGap);
+      lastY = y;
+      return `<g><path class="lead" d="M${f(l.ax)} ${f(l.ay)}L${f(l.bx)} ${f(l.by)}L${R} ${f(y)}"/>
+        <circle cx="${f(l.ax)}" cy="${f(l.ay)}" r="2" fill="${typeColor(l.type)}"/>
+        <text class="wlabel small" x="${R + 8}" y="${f(y + 3)}" text-anchor="start">${esc(l.type.replace(/_/g, " "))} <tspan class="wcount">${l.count}</tspan></text></g>`;
+    }).join("");
+  })();
   return `<div class="solar">
-    <svg class="band" viewBox="0 0 1240 300" role="img"
+    <svg class="band" viewBox="-30 0 1380 320" role="img"
       aria-label="Distribución de ${total} observaciones en ${all.length} tipos. Cada cuña es un tipo y actúa como pestaña. ${breakdown}.">
+      ${solarVigDefs}
+      ${solarRim()}
       ${parts.join("")}
+      ${solarVignette}
+      ${leadHtml}
     </svg>
     ${hole}
     ${solarWindows()}
@@ -617,9 +686,14 @@ function renderTypehead(type, count, total, loaded, scopeTotal) {
 /* Ledger del tipo seleccionado: hairlines con hora, título, preview y meta.
    "otros" no existe como tipo en el motor: se pide el ámbito y se filtra por
    los tipos agrupados en la cuña. */
+const hhmm = (s) => {
+  const d = new Date(parseTs(s));
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+};
+
 const solarRow = (o) => `
   <div class="lrow" data-obs-id="${o.id}">
-    <span class="h">${esc(rel(o.created_at))}</span>
+    <span class="h">${esc(hhmm(o.created_at))}</span>
     <div>
       <div class="t">${esc(o.title)}</div>
       <div class="p">${mdPreview(o.content, 160)}</div>
@@ -727,30 +801,50 @@ function wireObsCards(root) {
   });
 }
 
-/* Hover y foco escriben nombre y conteo en el hueco; al salir vuelve el
-   agregado del ámbito. El clic (o Enter/Espacio) selecciona el tipo. */
+/* El hueco: el tipo bajo el puntero o el foco escribe número, unidad y barra
+   de participación; al salir vuelve el tipo seleccionado (o el agregado del
+   ámbito si no hay selección). */
+function solarShowHole(view, type) {
+  const num = $("[data-hole-num]", view);
+  const unit = $("[data-hole-unit]", view);
+  const bar = $("[data-hole-bar]", view);
+  const pctEl = $("[data-hole-pct]", view);
+  const w = solarModel.wedges.find(([t]) => t === type);
+  if (!w || !num || !unit) return;
+  num.textContent = w[1];
+  unit.textContent = type.replace(/_/g, " ");
+  const p = pct(w[1], solarModel.total).toFixed(1);
+  if (bar) {
+    bar.style.width = `${p}%`;
+    bar.style.background = typeColor(type);
+  }
+  if (pctEl) pctEl.textContent = fmtPct(w[1], solarModel.total);
+}
+
+function solarShowScope(view) {
+  const num = $("[data-hole-num]", view);
+  const unit = $("[data-hole-unit]", view);
+  if (!num || !unit) return;
+  num.textContent = solarModel.total;
+  unit.textContent = scopeLabel();
+}
+
 function wireSolar(view) {
-  const holeNum = $("[data-hole-num]", view);
-  const holeUnit = $("[data-hole-unit]", view);
-  const showScope = () => {
-    if (!holeNum || !holeUnit) return;
-    holeNum.textContent = solarModel.total;
-    holeUnit.textContent = scopeLabel();
-  };
-  const showWedge = (type) => {
-    const w = solarModel.wedges.find(([t]) => t === type);
-    if (!w || !holeNum || !holeUnit) return;
-    holeNum.textContent = w[1];
-    holeUnit.textContent = type.replace(/_/g, " ");
+  const restore = () => {
+    if (solarSelected && solarModel.wedges.some(([t]) => t === solarSelected)) {
+      solarShowHole(view, solarSelected);
+    } else {
+      solarShowScope(view);
+    }
   };
   view.querySelectorAll(".wedge").forEach((w) => {
     const type = w.dataset.type;
     const hot = () => w.setAttribute("fill-opacity", w.classList.contains("on") ? "0.92" : "0.72");
     const rest = () => w.setAttribute("fill-opacity", w.classList.contains("on") ? "0.92" : "0.34");
-    w.addEventListener("mouseenter", () => { hot(); showWedge(type); });
-    w.addEventListener("mouseleave", () => { rest(); showScope(); });
-    w.addEventListener("focus", () => { hot(); showWedge(type); });
-    w.addEventListener("blur", () => { rest(); showScope(); });
+    w.addEventListener("mouseenter", () => { hot(); solarShowHole(view, type); });
+    w.addEventListener("mouseleave", restore);
+    w.addEventListener("focus", () => { hot(); solarShowHole(view, type); });
+    w.addEventListener("blur", restore);
     w.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectSolarType(view, type); }
     });
@@ -763,7 +857,7 @@ function wireSolar(view) {
       win.forEach((x) => x.classList.toggle("on", x === b));
     });
   });
-  showScope();
+  restore();
 }
 
 /* Selección: repinta cuñas, encabezado y ledger sin cambiar de ruta. */
@@ -783,6 +877,8 @@ function selectSolarType(view, type) {
     $(".fact", head).innerHTML =
       `<b>${w[1]}</b> observaciones · <b>${fmtPct(w[1], solarModel.total)}</b> del total · ventana cargada ${solarModel.loaded} de ${solarModel.scopeTotal}`;
   }
+  /* El hueco acompaña la selección (Enter/Espacio sin puntero encima). */
+  solarShowHole(view, type);
   fillSolarLedger(view, type);
 }
 
