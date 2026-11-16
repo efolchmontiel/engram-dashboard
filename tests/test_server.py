@@ -168,6 +168,16 @@ class ReadOpsTests(DashboardFixture):
         self.assertTrue(body["ok"])
         self.assertEqual(body["engram"]["version"], EXPECTED_ENGRAM_VERSION)
 
+    def test_beacon_reports_a_change_fingerprint(self):
+        status, body = self.client.get("/api/beacon")
+        self.assertEqual(status, 200)
+        self.assertTrue(body.get("rev"), "el beacon debe traer una huella")
+        self.assertIsInstance(body.get("bytes"), int)
+        status2, body2 = self.client.get("/api/beacon")
+        self.assertEqual(status2, 200)
+        self.assertEqual(body["rev"], body2["rev"],
+                         "la huella no cambia si el store no cambió")
+
     def test_system_reports_paths_and_binary(self):
         status, body = self.client.get("/api/system")
         self.assertEqual(status, 200)

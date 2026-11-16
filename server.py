@@ -5,6 +5,7 @@ No toca `~/.engram/engram.db` directamente: todo pasa por la API HTTP oficial
 de `engram serve`. Escucha en loopback por defecto.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -52,6 +53,12 @@ CLI_PROJECT_COUNTS = re.compile(
 CLI_OUTPUT_MAX_CHARS = 500
 CLI_ERROR_TAIL_MAX_CHARS = 300
 
+# Cache del estado de salud del motor para GET /api/beacon: el navegador
+# consulta el beacon constantemente y el /health del motor solo se sondea
+# cuando vence este TTL (el caso común del beacon queda en un stat del store).
+BEACON_HEALTH_TTL_SECONDS = 10.0
+_beacon_health_cache = {"at": 0.0, "ok": False, "version": ""}
+
 
 @dataclass
 class Config:
@@ -79,6 +86,38 @@ def map_projects(body) -> list:
             "directories": p.get("directories") or [],
         })
     return projects
+
+
+def store_fingerprint(data_dir: str) -> dict:
+    """Huella del store para el beacon: digest corto que cambia cuando cambia.
+
+    Comprende `st_mtime_ns` y `st_size` de `engram.db` y, si existe, del
+    `engram.db-wal`: en WAL mode una escritura puede mover el `-wal` sin
+    tocar el `.db`, así que ambos archivos entran al digest. Si el store
+    no existe la huella es `absent` (nunca 404: el navegador lo consulta
+    constantemente) y cualquier error de filesystem degrada a `unknown`.
+    """
+    digest = hashlib.sha1()
+    db_path = os.path.join(data_dir, "engram.db")
+    wal_path = os.path.join(data_dir, "engram.db-wal")
+    try:
+        db_st = os.stat(db_path)
+    except FileNotFoundError:
+        return {"rev": "absent", "bytes": 0, "wal_bytes": 0}
+    except OSError:
+        return {"rev": "unknown", "bytes": 0, "wal_bytes": 0}
+    digest.update(f"db:{db_st.st_mtime_ns}:{db_st.st_size};".encode())
+    db_size = db_st.st_size
+    try:
+        wal_st = os.stat(wal_path)
+    except FileNotFoundError:
+        wal_size = 0  # sin -wal: no hay escritura pendiente; entra solo el .db
+    except OSError:
+        return {"rev": "unknown", "bytes": db_size, "wal_bytes": 0}
+    else:
+        digest.update(f"wal:{wal_st.st_mtime_ns}:{wal_st.st_size};".encode())
+        wal_size = wal_st.st_size
+    return {"rev": digest.hexdigest()[:16], "bytes": db_size, "wal_bytes": wal_size}
 
 
 def clamp_int(value, low: int, high: int, default: int) -> int:
@@ -195,6 +234,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/system":
             return self.send_json(200, self.system_info())
+
+        if path == "/api/beacon":
+            return self.send_json(200, self.beacon())
 
         if path == "/api/doctor":
             return self.proxy("GET", "/doctor" + self._qs(q, ["project", "check"]))
@@ -567,6 +609,44 @@ class Handler(BaseHTTPRequestHandler):
                 "error": f"El motor detectado no expone la superficie '{surface}'",
                 "surface": surface})
         return self.send_json(status, body if body is not None else {})
+
+    def _cached_engine_health(self):
+        """`(ok, version)` del motor, con caché de TTL corto.
+
+        El beacon es el endpoint que el navegador consulta constantemente:
+        el `/health` del motor se sondea solo cuando venció
+        `BEACON_HEALTH_TTL_SECONDS`; mientras tanto se sirve el resultado
+        cacheado. Al quedar `down` se conserva la última versión conocida.
+        """
+        now = time.monotonic()
+        if now - _beacon_health_cache["at"] < BEACON_HEALTH_TTL_SECONDS:
+            return _beacon_health_cache["ok"], _beacon_health_cache["version"]
+        status, body = self.upstream("GET", "/health")
+        ok = status == 200
+        if ok:
+            _beacon_health_cache["version"] = str((body or {}).get("version") or "")
+        _beacon_health_cache["ok"] = ok
+        _beacon_health_cache["at"] = now
+        return _beacon_health_cache["ok"], _beacon_health_cache["version"]
+
+    def beacon(self) -> dict:
+        """Estado barato del store para polling del navegador, sin round-trip al motor.
+
+        En el caso común solo hace stat de `engram.db` y `engram.db-wal`;
+        la salud del motor viene de `_cached_engine_health`. Nunca devuelve
+        error: si el filesystem falla, la huella degrada a `unknown`.
+        """
+        fp = store_fingerprint(self.config.data_dir)
+        ok, version = self._cached_engine_health()
+        return {
+            "rev": fp["rev"],
+            "at": datetime.now(timezone.utc).isoformat(),
+            "bytes": fp["bytes"],
+            "wal_bytes": fp["wal_bytes"],
+            "engine": "ok" if ok else "down",
+            "engine_version": version,
+            "data_dir": self.config.data_dir,
+        }
 
     def system_info(self) -> dict:
         data_dir = self.config.data_dir
