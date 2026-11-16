@@ -1,19 +1,44 @@
 # engram-dashboard-local
 
-Interfaz web local para consultar y gestionar la memoria de [Engram](https://github.com/Gentleman-Programming/engram). Backend con la librería estándar de Python y la API HTTP del motor; frontend en HTML, CSS y JavaScript sin compilación ni dependencias. Versión de referencia: **Engram 3.7.0**. Escucha en `http://127.0.0.1:7438` y no incorpora autenticación de usuarios.
+Interfaz web local para consultar y gestionar la memoria de [Engram](https://github.com/Gentleman-Programming/engram). Backend con la librería estándar de Python y la API HTTP del motor; frontend en HTML, CSS y JavaScript sin compilación ni dependencias. Versión de referencia: **Engram 3.7.2**. Escucha en `http://127.0.0.1:7438` y no incorpora autenticación de usuarios.
 
-![Panel global del dashboard, con datos de ejemplo](docs/dashboard.png)
+![Panel de resumen: dona de distribución por tipo, cuatro cifras y navegación lateral](docs/dashboard.png)
 
 ## Qué incluye
 
-- **Overview** global: totales, actividad de 24 h / 7 d / 30 d, serie diaria y distribución por tipo en un radar con leyenda interactiva.
-- **Memories**: exploración por proyecto o global, búsqueda FTS del motor, filtros por tipo y sesión, orden configurable y aviso de carga parcial.
-- **Sessions** con timeline de observaciones, **Prompts** y **Projects** con contadores y directorios asociados.
-- **Salud** (relaciones y cola de revisión, solo lectura) y **System** (`doctor`, export JSON y comparación con la versión de referencia).
+- **Overview**: la distribución por tipo como una dona navegable. Cada cuña es un tipo y **al tocarla se abre Memories filtrado por ese tipo**, así el gráfico funciona como atajo y no como adorno. Debajo, cuatro cifras —observaciones, sesiones, proyectos y últimas 24 h— y nada más: el detalle vive en Memories.
+- **Memories**: exploración por proyecto o global, búsqueda FTS del motor, filtros por tipo y sesión, orden configurable y aviso cuando el ámbito se truncó.
+- **Sessions**: mapa de calor de 26 semanas por día, más el listado paginado con eliminación de sesiones vacías.
+- **Prompts**: listado paginado con búsqueda y eliminación permanente.
+- **Projects**: contadores por proyecto, directorios asociados y borrado suave o definitivo con cascada.
+- **Salud**: dona de juicio de relaciones (pendientes, juzgadas, sin juicio) con su leyenda, tipos de relación, cola de revisión vencida y las tablas de relaciones y revisión, ambas paginadas. Solo lectura.
+- **System**: `doctor`, export JSON y comparación con la versión de referencia.
 - **Detalle de una memoria**: Markdown acotado, edición de título, tipo, contenido, ámbito y clave temática, copia y descarga en Markdown o JSON.
-- Atajos: `Ctrl`/`⌘`+`K` para buscar, `Esc` para cerrar detalle o modal.
+
+![Salud de memoria: dona de juicio de relaciones y tipos de relación](docs/salud.png)
+
+![Sesiones: mapa de calor de 26 semanas y listado paginado](docs/sesiones.png)
 
 El dashboard no crea observaciones, sesiones ni proyectos, y no juzga relaciones ni cambia estados de revisión: eso se hace con las herramientas de Engram.
+
+## Navegación
+
+El menú vive en una barra lateral fija de 222 px: marca, buscador, las siete vistas con su conteo, los proyectos con memoria y el estado de la API al pie. La barra superior solo lleva el título, las ventanas de tiempo y el botón de recarga.
+
+| Atajo | Acción |
+| --- | --- |
+| `Ctrl`/`⌘` + `K` | Enfocar el buscador |
+| `Esc` | Cerrar el detalle o el diálogo |
+
+## Paginado
+
+| Vista | Cómo pagina |
+| --- | --- |
+| Salud | **Servidor**: el dashboard reenvía `offset` a `/review` y `/conflicts`, así que recorre la cola completa |
+| Sessions | **Cliente**: carga hasta 500 sesiones recientes y las trocea en el navegador |
+| Prompts | **Cliente**: igual, hasta 500 prompts recientes |
+
+El motor **ignora `offset`** en `/sessions/recent` y `/prompts/recent`: pedir `offset=3` devuelve los mismos primeros registros. Por eso esas dos vistas paginan sobre lo cargado y lo dicen en pantalla (`1–50 de 500 sesiones cargadas`), en lugar de simular un recorrido que no existe. Para paginar de verdad ahí hace falta soporte del motor.
 
 ## Borrado
 
@@ -33,7 +58,7 @@ El snapshot debe estar en `<data_dir>/dashboard-snapshots/` y tener menos de 10 
 ## Requisitos
 
 - Python 3 (probado con 3.14; no se declara mínimo).
-- Engram 3.7.0 instalado, con el binario en el `PATH`, en `~/.local/bin/engram` o en `ENGRAM_BIN`.
+- Engram 3.7.2 instalado, con el binario en el `PATH`, en `~/.local/bin/engram` o en `ENGRAM_BIN`.
 - Un navegador moderno. No hace falta `pip`, `npm`, entorno virtual ni compilar el frontend.
 
 ## Ejecución
@@ -62,6 +87,12 @@ Reutiliza la API si `/health` responde 200; si no, lanza `engram serve` y aborta
 
 `ENGRAM_DATA_DIR` no cambia los datos de una API que ya está corriendo. Para aislar el dashboard, fijá también `ENGRAM_API` hacia otro motor y un `ENGRAM_DASH_PORT` distinto.
 
+## Interfaz
+
+Un solo lenguaje visual para todas las vistas: fondo casi negro (`#09090b`), superficies en `#111113` y `#18181c`, un acento magenta (`#ea1889`) y el resto del color reservado a los datos. Las etiquetas de sección son micro-tipografía en mayúsculas, los números van en monoespaciada y las tarjetas se reemplazan por líneas de 1 px donde no hacen falta cajas. Los tipos de observación tienen un tono fijo que se repite en la dona, en los badges y en las tablas.
+
+No hay fuentes externas, imágenes remotas ni CDN: todo es stack de sistema y SVG generado en el cliente.
+
 ## Seguridad
 
 Loopback, sin autenticación ni TLS: exponer otra interfaz, un proxy o un túnel da acceso a memorias y a escrituras. Ningún borrado del panel se puede deshacer, y el backend exige el snapshot aunque un cliente se saltee el modal. Un snapshot es memoria exportada en claro y no reemplaza un backup del store SQLite. Límites de confianza y reporte de problemas en [SECURITY.md](SECURITY.md).
@@ -69,11 +100,12 @@ Loopback, sin autenticación ni TLS: exponer otra interfaz, un proxy o un túnel
 ## Limitaciones
 
 - Memories carga 1000 observaciones y busca hasta 200 resultados del motor; filtros y orden se aplican sobre lo cargado.
-- Overview es global aunque elijas un proyecto en otra vista, y se calcula con hasta 20000 observaciones activas.
-- Sessions y Prompts muestran los 200 más recientes del ámbito.
+- Overview es global aunque elijas un proyecto en otra vista, y se calcula con hasta 20000 observaciones activas. Sus ventanas (24 h / 7 d / 30 d / todo) son visuales: el motor no entrega el reparto por tipo y por ventana en la misma respuesta.
+- Sessions y Prompts paginan en el cliente porque el motor ignora `offset` en esas rutas; el total aparece solo cuando el dashboard ya conoce los contadores por proyecto.
 - El detalle no ofrece versiones anteriores y su Markdown no interpreta HTML.
 - `doctor` depende del proyecto seleccionado; puede reportar un proyecto desconocido.
 - Un proyecto cuyo nombre empiece con guion puede hacer fallar la cascada: el CLI lo lee como opción y el dashboard responde `502` sin declarar éxito.
+- La suite espera el binario del motor: los tests de integración arrancan `engram serve`, así que sin binario fallan antes de probar nada.
 
 ## Arranque automático y acceso de escritorio (opcional)
 
@@ -83,7 +115,7 @@ Loopback, sin autenticación ni TLS: exponer otra interfaz, un proxy o un túnel
 
 Construido sobre [engram-dashboard-local](https://github.com/eSagraAI/engram-dashboard-local) de eSagra ([@eSagraAI](https://github.com/eSagraAI)): el dashboard original —backend con la librería estándar de Python, frontend sin dependencias, `run.sh`, tests, deploy y docs— viene de ahí. Gracias a eSagra por publicarlo.
 
-Agregado en este fork: la superficie de borrado con snapshots de export obligatorios, la cascada de proyecto por CLI, la edición de `scope` y `topic_key`, el sondeo de health, el fallback de puerto, la apertura automática del navegador, la paleta rosa y los tests que cubren todo eso.
+Agregado en este fork: la superficie de borrado con snapshots de export obligatorios, la cascada de proyecto por CLI, la edición de `scope` y `topic_key`, el sondeo de health, el fallback de puerto, la apertura automática del navegador, el rediseño completo de la interfaz (dona navegable, mapa de calor, paginado por vista y el sistema visual documentado en `design/`), y los tests que cubren todo eso.
 
 ## Licencia
 
