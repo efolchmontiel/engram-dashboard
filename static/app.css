@@ -403,95 +403,65 @@ mark {
 .pill.ok { color: var(--ok); border-color: rgba(52, 211, 153, .35); background: var(--ok-soft); }
 .pill.warn { color: var(--warn); border-color: rgba(251, 191, 36, .35); background: var(--warn-soft); }
 
-/* --- 5. overview · cinta solar --------------------------------------------- */
+/* --- 5. overview · wheel + stats + pager ----------------------------------- */
 
-/* Band wrapper. The band itself is an SVG whose wedges, labels and counts
-   are inline SVG attributes set by app.js (color, geometry, fill-opacity);
-   CSS owns cursor, the selected state, the focus ring and transitions. */
-.solar {
+/* Wheel wrapper: the donut app.js renders (viewBox 0 0 560 560, rOut 250,
+   rIn 150) is the navigation surface of the overview. Geometry, arc hues and
+   label anchors are inline SVG attributes set by app.js; CSS owns cursor,
+   the selected state, the focus ring and the transitions. */
+.wheel {
   position: relative;
   width: 100%;
-  margin-bottom: 4px;
+  max-width: 560px;
+  margin: 0 auto 4px;
 }
 
-.band {
+.wheel svg {
   display: block;
   width: 100%;
   height: auto;
   overflow: visible;
-  margin: 0 -8px;
 }
 
-.wedge {
+.wheel-arc {
   cursor: pointer;
-  transition: opacity .16s ease;
+  transition: fill-opacity .16s ease, transform .16s ease;
   outline: none;
+  fill-opacity: .82;
 }
 
-.wedge.on,
-.wedge[aria-pressed="true"] {
-  opacity: 1;
-  stroke-opacity: .9;
-}
+.wheel-arc:hover { fill-opacity: .92; }
 
-.wedge:focus-visible {
-  stroke: var(--text);
+.wheel-arc.on { fill-opacity: 1; }
+
+/* Focus ring: 2px magenta over the arc's own stroke. */
+.wheel-arc:focus-visible {
+  stroke: var(--accent);
   stroke-width: 2;
 }
 
-/* Graduated rim: the hairline arc that frames the band like an instrument
-   dial, with its 5° ticks (every 30° stronger). Drawn by app.js. */
-.rim {
-  fill: none;
-  stroke: rgba(255, 255, 255, .10);
-}
-
-.tick {
-  stroke: rgba(255, 255, 255, .14);
-  stroke-width: 1;
-}
-
-/* Leader polylines for the narrow wedges: from the wedge rim to the stacked
-   label at the right edge. */
-.lead {
-  fill: none;
-  stroke: rgba(255, 255, 255, .22);
-  stroke-width: 1;
-}
-
-.wlabel {
-  fill: var(--body);
-  font: 500 9.5px var(--mono);
-  letter-spacing: .04em;
+/* Labels sit on the arcs themselves: dark ink over the type hue. */
+.wheel-label {
+  fill: #09090b;
+  font: 500 9px var(--mono);
+  letter-spacing: .06em;
   text-transform: uppercase;
   pointer-events: none;
   user-select: none;
 }
 
-/* Leader label for the narrow wedges: quieter than the in-band labels. */
-.wlabel.small {
-  font-size: 9px;
-  fill: var(--muted);
-}
-
-.wcount {
-  fill: var(--faint);
-  font: 600 9.5px var(--mono);
-}
-
-/* The half-sun hole: the big numeral of the loaded scope (or of the hovered
-   wedge, written by app.js). */
-.solar-hole {
+/* The donut hole: the big numeral of the loaded scope (or of the hovered
+   wedge, written by app.js) plus that type's share of the total. */
+.wheel-hole {
   position: absolute;
   left: 50%;
-  bottom: 14px;
-  transform: translateX(-50%);
-  width: 420px;
+  top: 50%;
+  transform: translate(-50%, -50%);
   text-align: center;
   pointer-events: none;
 }
 
-.solar-hole .num {
+.wheel-hole .num {
   display: block;
   font: 700 44px/1.1 var(--sans);
   letter-spacing: -.045em;
@@ -499,7 +469,7 @@ mark {
   font-variant-numeric: tabular-nums;
 }
 
-.solar-hole .unit {
+.wheel-hole .unit {
   display: block;
   margin-top: 8px;
   color: var(--muted);
@@ -508,9 +478,9 @@ mark {
   text-transform: uppercase;
 }
 
-/* Share bar inside the hole: how much of the loaded scope the hovered or
-   selected wedge owns. The fill hue is set inline by app.js. */
-.solar-share {
+/* Share row: how much of the loaded scope the hovered or selected type owns.
+   The fill hue is set inline by app.js. */
+.wheel-hole .share {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -518,7 +488,7 @@ mark {
   margin: 9px auto 0;
 }
 
-.solar-share .track {
+.wheel-hole .share .track {
   flex: 1;
   height: 3px;
   border-radius: 99px;
@@ -526,20 +496,134 @@ mark {
   overflow: hidden;
 }
 
-.solar-share .track i {
+.wheel-hole .share .track i {
   display: block;
   height: 100%;
   border-radius: 99px;
   background: var(--accent);
 }
 
-.solar-share .v {
+.wheel-hole .share .v {
   font: 9.5px var(--mono);
   color: var(--faint);
   white-space: nowrap;
 }
 
-/* Time-window control pinned to the band's bottom edge. */
+/* Four key numbers under the wheel: equal cells split by 1px column rules,
+   no cards. */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 20px 0 0;
+}
+
+.stat-cell {
+  padding: 2px 18px;
+  min-width: 0;
+}
+
+.stat-cell:first-child { padding-left: 0; }
+
+.stat-cell + .stat-cell { border-left: 1px solid var(--line); }
+
+.stat-cell .k {
+  color: var(--faint);
+  font: 600 9px var(--sans);
+  letter-spacing: var(--track);
+  text-transform: uppercase;
+}
+
+.stat-cell .v {
+  margin-top: 5px;
+  color: var(--text);
+  font: 600 22px/1.15 var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
+}
+
+.stat-cell .s {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+/* Compact hairline pager bar: prev/next, position readout, page size. */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+.pager-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .16s ease, border-color .16s ease, background .16s ease;
+}
+
+.pager-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, .04);
+}
+
+.pager-btn:disabled {
+  opacity: .42;
+  cursor: not-allowed;
+}
+
+.pager-info {
+  font: 10.5px var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.pager-size {
+  margin-left: auto;
+  padding: 3px 9px;
+  font-size: 10px;
+}
+
+/* Mini chart strip (~64px) above the paginated views: prompts per project,
+   session activity by day and the relation/review mix in Salud. Bars are
+   shapes emitted by app.js with the 2px top radius in their geometry; the
+   per-bar hue rides on --c and the axis text stays quiet mono. */
+.mini-chart {
+  height: auto;
+  margin: 0 0 14px;
+}
+
+.mini-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.mc-bar {
+  fill: var(--c, var(--accent));
+  transition: fill .16s ease;
+}
+
+.mc-axis {
+  fill: var(--faint);
+  font: 9px var(--mono);
+  letter-spacing: .04em;
+}
+
+/* Time-window control pinned to the wheel's top-right edge. */
 .windows {
   position: absolute;
   right: 4px;
@@ -572,134 +656,9 @@ mark {
   color: var(--bg);
 }
 
-/* Typehead: swatch in the type hue, the type name at editorial scale and the
-   data line under it. */
-.typehead {
-  display: flex;
-  align-items: flex-end;
-  gap: 16px;
-  margin: 0 0 2px;
-  padding: 22px 0 12px;
-  border-bottom: 1px solid var(--line-strong);
-}
-
-.typehead .swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 3px;
-  flex: none;
-  margin-bottom: 8px;
-}
-
-.typehead h1 {
-  font-size: 27px;
-  line-height: 1.05;
-  font-weight: 730;
-  letter-spacing: -.035em;
-  color: var(--text);
-}
-
-.typehead .fact {
-  margin-top: 6px;
-  color: var(--muted);
-  font: 10.5px var(--mono);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.typehead .fact b {
-  font-weight: 640;
-  color: var(--text);
-}
-
-/* Ledger: hairline rows — hour, title/preview/meta, type pill, updated. */
-.ledger { width: 100%; }
-
-.lrow {
-  display: grid;
-  grid-template-columns: 54px minmax(0, 1fr) 176px 84px;
-  gap: 16px;
-  align-items: center;
-  padding: 11px 2px;
-  border-bottom: 1px solid var(--line);
-  cursor: pointer;
-  transition: background .16s ease;
-}
-
-.lrow:hover { background: rgba(255, 255, 255, .025); }
-
-.lrow .h {
-  color: var(--faint);
-  font: 10.5px var(--mono);
-  font-variant-numeric: tabular-nums;
-  align-self: start;
-  padding-top: 2px;
-  white-space: nowrap;
-}
-
-.lrow .t {
-  color: var(--text);
-  font-weight: 600;
-  font-size: 13px;
-  line-height: 1.35;
-}
-
-.lrow .p {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 12px;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
-.lrow .meta {
-  margin-top: 3px;
-  color: var(--faint);
-  font: 10.5px var(--mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lrow .when {
-  color: var(--faint);
-  font: 10.5px var(--mono);
-  text-align: right;
-}
-
-/* Type pill: hue is passed per row as --c by app.js. No color-mix: the tint
-   is a ::before layer of the hue at low opacity behind the label. */
-.tpill {
-  justify-self: start;
-  position: relative;
-  isolation: isolate;
-  display: inline-flex;
-  align-items: center;
-  max-width: 100%;
-  padding: 3px 9px;
-  border: 1px solid var(--c, var(--line-strong));
-  border-radius: 99px;
-  color: var(--c, var(--muted));
-  font: 600 9px var(--mono);
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.tpill::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  background: var(--c, var(--faint));
-  opacity: .13;
-}
+/* Typehead, ledger and type pills left the overview in the third design
+   round (S9): their information now lives in Memories, reached by clicking
+   an arc. */
 
 /* --- 6. buttons ------------------------------------------------------------ */
 
@@ -971,7 +930,8 @@ select:focus { outline: none; border-color: rgba(234, 24, 137, .5); }
 /* --- 10. tables ------------------------------------------------------------ */
 
 .table-wrap {
-  overflow-x: auto;
+  overflow: auto;
+  max-height: calc(100vh - 420px);
   border: 1px solid var(--line);
   border-radius: var(--r);
   background: var(--surface);
@@ -984,6 +944,10 @@ table {
 }
 
 th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--raised);
   text-align: left;
   padding: 8px 14px;
   border-bottom: 1px solid var(--line-strong);
@@ -1579,8 +1543,8 @@ td .preview {
     scroll-behavior: auto;
   }
 
-  .skeleton, .wedge, .btn, .chip, .toast, .tl-item, .tl-title,
-  tbody tr, .lrow, #nav a, #drawer, #modal, .destructive {
+  .skeleton, .btn, .chip, .toast, .tl-item, .tl-title,
+  tbody tr, .wheel-arc, .pager-btn, #nav a, #drawer, #modal, .destructive {
     transition: none;
     animation: none;
   }
@@ -1612,14 +1576,9 @@ body[data-hidden="1"] :is(#drawer, #modal, .destructive) {
 
   .grid, .grid.cols-3, .grid.cols-2 { grid-template-columns: minmax(0, 1fr); }
 
-  .solar-hole { width: 320px; bottom: 10px; }
-  .solar-hole .num { font-size: 32px; }
+  .wheel-hole .num { font-size: 32px; }
 
-  .typehead { flex-wrap: wrap; }
-  .typehead .fact { white-space: normal; margin-left: 0; width: 100%; }
-
-  .lrow { grid-template-columns: 52px minmax(0, 1fr) 84px; }
-  .lrow .p { display: none; }
+  .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 14px; }
 
   .meta-grid { grid-template-columns: minmax(0, 1fr); }
 

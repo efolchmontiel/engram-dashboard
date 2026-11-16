@@ -141,7 +141,9 @@ const state = {
   q: "", type: "", session: "", order: "updated", limit: 1000,
   projects: [], health: null, stats: null, loadedAt: null,
   compatible: true,
-  cStatus: "", cRelation: "", cOffset: 0,
+  cStatus: "", cRelation: "", cOffset: 0, cLimit: 100,
+  rOffset: 0, rLimit: 100,
+  pPage: 1, pSize: 50, sPage: 1, sSize: 50,
   obsIndex: null, focusSearch: false,
 };
 
@@ -481,59 +483,195 @@ function windowNotice(shown, truncated, total) {
   </div>`;
 }
 
-/* --- Overview: la cinta solar ------------------------------------------------ */
+/* --- paginación ------------------------------------------------------------- */
 
-/* Un mismo color por tipo en la banda, el encabezado del tipo y el ledger.
-   Paleta fija del sistema; los tipos no catalogados caen al gris de "otros". */
+const PAGE_SIZES = [25, 50, 100];
+
+/* Barra .pager: ‹ › deshabilitados en los extremos, línea de información y
+   tamaño de página. No se emite cuando todo cabe en una sola página. */
+function pagerBar({ label, page, pages, info, size, name = "" }) {
+  if (pages <= 1) return "";
+  return `
+    <div class="pager" role="navigation" aria-label="${esc(label)}"${name ? ` data-pager="${esc(name)}"` : ""}>
+      <button class="pager-btn" data-pg="prev" aria-label="Página anterior"${page <= 1 ? " disabled" : ""}>‹</button>
+      <button class="pager-btn" data-pg="next" aria-label="Página siguiente"${page >= pages ? " disabled" : ""}>›</button>
+      <span class="pager-info">${info}</span>
+      <select class="pager-size" data-pg-size aria-label="Filas por página">
+        ${PAGE_SIZES.map((n) => `<option value="${n}"${n === size ? " selected" : ""}>${n} / pág.</option>`).join("")}
+      </select>
+    </div>`;
+}
+
+function wirePager(root, { onPrev, onNext, onSize, name = "" }) {
+  const bar = name ? $(`.pager[data-pager="${name}"]`, root) : $(".pager", root);
+  if (!bar) return;
+  const prev = $('[data-pg="prev"]', bar);
+  const next = $('[data-pg="next"]', bar);
+  const size = $("[data-pg-size]", bar);
+  if (prev) prev.onclick = onPrev;
+  if (next) next.onclick = onNext;
+  if (size) size.onchange = (e) => onSize(Number(e.target.value));
+}
+
+/* Info del pager cliente: rango visible sobre lo cargado y, cuando la carga no
+   alcanza al total del ámbito, se dice de forma explícita en la misma línea. */
+function pagerInfoClient(page, size, loaded, total, unit) {
+  const from = (page - 1) * size + 1;
+  const to = Math.min(page * size, loaded);
+  let info = `${from}–${to} de ${loaded} ${unit} cargadas`;
+  if (total != null && loaded < total) info += ` · ${total} en total · el paginador solo recorre lo cargado`;
+  else if (total != null) info += ` · ${total} en total`;
+  return esc(info);
+}
+
+/* Info del pager de servidor: la API sí pagina, el rango es real. */
+function pagerInfoServer(page, size, total, unit) {
+  const from = total ? (page - 1) * size + 1 : 0;
+  const to = Math.min(page * size, total);
+  return esc(`${from}–${to} de ${total} ${unit}`);
+}
+
+/* Total del ámbito según los contadores por proyecto que el shell ya cargó
+   (/api/projects alimenta el selector y state.projects). Devuelve null cuando
+   aún no hay datos: el pager entonces solo informa lo cargado. */
+function scopeTotalFor(kind) {
+  if (state.project) {
+    const p = state.projects.find((x) => x.name === state.project);
+    return p ? (p[kind] || 0) : null;
+  }
+  return state.projects.length
+    ? state.projects.reduce((acc, p) => acc + (p[kind] || 0), 0)
+    : null;
+}
+
+/* --- .mini-chart (~64 px) sobre la tabla -------------------------------------- */
+
+/* Sin viewBox: x/width en % se resuelven contra el ancho real del contenedor y
+   el alto queda en px, así el texto .mc-axis nunca se deforma. rx=2 redondea
+   las cuatro esquinas, así que un segundo rect cuadra la base y el radio queda
+   solo en el borde superior de la barra. */
+function miniChartSvg(aria, inner, height) {
+  return `<div class="mini-chart">
+    <svg role="img" aria-label="${esc(aria)}"${height ? ` height="${height}"` : ""}>${inner}</svg>
+  </div>`;
+}
+
+function mcBar(x, y, w, h, color, title) {
+  const r = Math.min(2, h);
+  const base = h > r
+    ? `<rect class="mc-bar" x="${x}" y="${(y + h - r).toFixed(2)}" width="${w}" height="${r.toFixed(2)}" style="--c:${color}"></rect>`
+    : "";
+  return `<rect class="mc-bar" x="${x}" y="${y.toFixed(2)}" width="${w}" height="${h.toFixed(2)}" rx="${r.toFixed(2)}" style="--c:${color}"><title>${esc(title)}</title></rect>${base}`;
+}
+
+/* Columnas verticales: una entrada por categoría; .axis rota el rótulo para no
+   saturar el eje ("day labels every few columns"). */
+function miniChartColumns(aria, entries) {
+  const n = entries.length;
+  if (!n || !entries.some((e) => e.value > 0)) return "";
+  const max = Math.max(...entries.map((e) => e.value));
+  const col = 100 / n;
+  const gap = Math.min(col * 0.18, 1.4);
+  const baseY = 48, hMax = 42;
+  const inner = entries.map((e, i) => {
+    const x = `${(i * col + gap).toFixed(3)}%`;
+    const w = `${(col - gap * 2).toFixed(3)}%`;
+    const h = e.value ? Math.max((e.value / max) * hMax, 2) : 0;
+    const bar = e.value ? mcBar(x, baseY - h, w, h, e.color || ACCENT, `${e.label}: ${e.value}`) : "";
+    const axis = e.axis
+      ? `<text class="mc-axis" x="${((i + 0.5) * col).toFixed(3)}%" y="61" text-anchor="middle">${esc(e.axis)}</text>`
+      : "";
+    return bar + axis;
+  }).join("");
+  return miniChartSvg(aria, inner);
+}
+
+/* Barras horizontales: nombre del proyecto en .mc-axis a la izquierda, barra
+   proporcional a la derecha; top 6 para que quepan en los 64 px. */
+function miniChartRows(aria, entries) {
+  const data = entries.filter((e) => e.value > 0)
+    .sort((a, b) => b.value - a.value).slice(0, 6);
+  if (!data.length) return "";
+  const max = data[0].value;
+  const rowH = 18;
+  const barH = Math.min(rowH - 6, 12);
+  const inner = data.map((e, i) => {
+    const y = i * rowH + (rowH - barH) / 2;
+    const name = String(e.label);
+    const axisText = name.length > 12 ? `${name.slice(0, 11)}…` : name;
+    return `<text class="mc-axis" x="0" y="${(y + barH / 2 + 3).toFixed(2)}">${esc(axisText)}</text>` +
+      mcBar("14%", y, `${((e.value / max) * 82).toFixed(3)}%`, barH, e.color || ACCENT, `${name}: ${e.value}`);
+  }).join("");
+  return miniChartSvg(aria, inner, data.length * rowH);
+}
+
+/* --- Overview: la rueda donut ------------------------------------------------ */
+
+/* Un mismo color por tipo en la rueda; el detalle por tipo vive en Memories,
+   donde se llega con un clic. Paleta fija del sistema; los tipos no
+   catalogados caen al gris de "otros". */
 const TYPE_HUE = {
   session_summary: "#ea1889", discovery: "#34d399", bugfix: "#f87171",
   decision: "#a78bfa", config: "#38bdf8", architecture: "#fbbf24",
   preference: "#f472b6", pattern: "#a3e635", manual: "#94a3b8", otros: "#52525b",
 };
 const typeColor = (t) => TYPE_HUE[t] || "#52525b";
+const ACCENT = "#ea1889";
 
 const pct = (n, d) => (d ? (n * 100) / d : 0);
 const fmtPct = (n, d) => (d ? `${pct(n, d).toFixed(1).replace(/\.0$/, "")}%` : "—");
 
-/* El semicírculo se reparte entre un número acotado de cuñas para que la
-   etiqueta horizontal siga cabiendo: los tipos restantes se agrupan en una
-   única cuña "otros", sin perder el desglose, que vive en el aria-label.
-   Misma regla de acotado (9 + otros) que tenía el radial. */
-const SOLAR_MAX = 9;
+/* Reparto acotado (9 + otros), la misma regla del radial y la banda: los
+   tipos restantes se agrupan en una única cuña "otros", sin perder el
+   desglose, que vive en el aria-label. */
+const WHEEL_MAX = 9;
 
-/* Geometría de la banda elíptica: centro (620, 320), radios exteriores
-   (600, 252) e interiores (322, 104); las cuñas van de 180° a 360°, cada una
-   con un pequeño hueco angular para que las vecinas nunca se toquen. El
-   viewBox se abre a la derecha (-30 0 1380 320) para el carril de etiquetas
-   con línea guía; rim y ticks viven 14 px afuera de la banda. */
-const SOLAR_GEO = {
-  cx: 620, cy: 320, rxo: 600, ryo: 252, rxi: 322, ryi: 104,
-  gap: 0.9, labelRx: 452, labelRy: 178, minLabelDeg: 15,
-  rim: 14, tickMinor: 19, tickMajor: 24,
-  leadOut: 12, rightCol: 1266, leadGap: 15,
-};
+/* Geometría del donut: centro (280, 280), radios exterior 250 e interior 150,
+   etiquetas sobre un arco a radio 200. Los arcos arrancan a -90° (arriba) y
+   cada vecindad cede 1.2° de hueco. */
+const WHEEL_GEO = { cx: 280, cy: 280, rOut: 250, rIn: 150, gap: 1.2, labelR: 200, minLabelDeg: 12 };
 
-function solarPt(rx, ry, deg) {
+function wheelPt(r, deg) {
   const a = (deg * Math.PI) / 180;
-  return [SOLAR_GEO.cx + rx * Math.cos(a), SOLAR_GEO.cy + ry * Math.sin(a)];
+  return [WHEEL_GEO.cx + r * Math.cos(a), WHEEL_GEO.cy + r * Math.sin(a)];
 }
 
-/* Sector anular real: dos arcos elípticos y dos rectas, nunca stroke-dasharray. */
-function solarSector(a0, a1) {
+/* Sector anular real: dos arcos y dos rectas, nunca stroke-dasharray. */
+function wheelSector(a0, a1) {
   const f = (n) => n.toFixed(2);
-  const [x0, y0] = solarPt(SOLAR_GEO.rxo, SOLAR_GEO.ryo, a0);
-  const [x1, y1] = solarPt(SOLAR_GEO.rxo, SOLAR_GEO.ryo, a1);
-  const [x2, y2] = solarPt(SOLAR_GEO.rxi, SOLAR_GEO.ryi, a1);
-  const [x3, y3] = solarPt(SOLAR_GEO.rxi, SOLAR_GEO.ryi, a0);
+  const [x0, y0] = wheelPt(WHEEL_GEO.rOut, a0);
+  const [x1, y1] = wheelPt(WHEEL_GEO.rOut, a1);
+  const [x2, y2] = wheelPt(WHEEL_GEO.rIn, a1);
+  const [x3, y3] = wheelPt(WHEEL_GEO.rIn, a0);
   const large = a1 - a0 > 180 ? 1 : 0;
-  return `M${f(x0)} ${f(y0)}A${SOLAR_GEO.rxo} ${SOLAR_GEO.ryo} 0 ${large} 1 ${f(x1)} ${f(y1)}` +
-    `L${f(x2)} ${f(y2)}A${SOLAR_GEO.rxi} ${SOLAR_GEO.ryi} 0 ${large} 0 ${f(x3)} ${f(y3)}Z`;
+  return `M${f(x0)} ${f(y0)}A${WHEEL_GEO.rOut} ${WHEEL_GEO.rOut} 0 ${large} 1 ${f(x1)} ${f(y1)}` +
+    `L${f(x2)} ${f(y2)}A${WHEEL_GEO.rIn} ${WHEEL_GEO.rIn} 0 ${large} 0 ${f(x3)} ${f(y3)}Z`;
 }
 
-/* Reparto en cuñas: tipos ordenados por peso, cola agrupada en "otros". */
-function solarBuckets(byType) {
+/* Arco invisible a radio 200 sobre el que corre la etiqueta textPath. */
+function wheelLabelArc(a0, a1) {
+  const f = (n) => n.toFixed(2);
+  /* En la mitad inferior el arco se recorre al revés para que el texto no quede
+     cabeza abajo: es el mismo truco que usan los sunburst. */
+  const mid = (a0 + a1) / 2;
+  const flip = Math.sin(mid * Math.PI / 180) > 0;
+  const from = flip ? a1 : a0, to = flip ? a0 : a1;
+  const [x0, y0] = wheelPt(WHEEL_GEO.labelR, from);
+  const [x1, y1] = wheelPt(WHEEL_GEO.labelR, to);
+  const large = Math.abs(to - from) > 180 ? 1 : 0;
+  return `M${f(x0)} ${f(y0)}A${WHEEL_GEO.labelR} ${WHEEL_GEO.labelR} 0 ${large} ${flip ? 0 : 1} ${f(x1)} ${f(y1)}`;
+}
+
+/* Desplazamiento del arco seleccionado: 6 px hacia afuera por su ángulo medio. */
+function wheelOutset(mid) {
+  const a = (mid * Math.PI) / 180;
+  return `transform="translate(${(6 * Math.cos(a)).toFixed(2)} ${(6 * Math.sin(a)).toFixed(2)})"`;
+}
+
+/* Reparto en arcos: tipos ordenados por peso, cola agrupada en "otros". */
+function wheelBuckets(byType) {
   const all = Object.entries(byType || {}).sort((a, b) => b[1] - a[1]);
-  const head = all.slice(0, SOLAR_MAX - (all.length > SOLAR_MAX ? 1 : 0));
+  const head = all.slice(0, WHEEL_MAX - (all.length > WHEEL_MAX ? 1 : 0));
   const tail = all.slice(head.length);
   const wedges = tail.length
     ? [...head, ["otros", tail.reduce((acc, [, n]) => acc + n, 0)]]
@@ -541,193 +679,82 @@ function solarBuckets(byType) {
   return { wedges, tail: tail.map(([t]) => t), all };
 }
 
-/* Estado de la cinta: la selección vive entre refrescos; el modelo alimenta
-   el hover (nombre y conteo al hueco) y el ledger de "otros". */
+/* Estado de la rueda: la selección vive entre refrescos y desplaza su arco
+   6 px hacia afuera; el modelo alimenta el hover (nombre y conteo al hueco). */
 let solarSelected = "";
 let solarModel = { total: 0, wedges: [], tail: [], loaded: 0, scopeTotal: 0 };
 
 /* Control de ventana: la API no da desglose por tipo por ventana, así que la
-   banda muestra el agregado real del ámbito cargado y el control queda
-   visual, como en la referencia. */
-function solarWindows() {
+   rueda muestra el agregado real del ámbito cargado y el control queda
+   visual, como en la referencia. Vive dentro de .wheel: el CSS lo pega a la
+   esquina superior derecha del donut. */
+function wheelWindows() {
   return `<div class="windows" role="group" aria-label="Ventana de tiempo">
     <button data-w="24h">24 h</button><button data-w="7d">7 d</button>
     <button data-w="30d">30 d</button><button class="on" data-w="todo">todo</button>
   </div>`;
 }
 
-/* Rim graduado y ticks cada 5°: el instrumento antes que el dato. */
-function solarRim() {
-  const f = (n) => n.toFixed(2);
-  const r = SOLAR_GEO;
-  const rim = `<path class="rim" d="M${f(r.cx - r.rxo - r.rim)} ${f(r.cy)}A${f(r.rxo + r.rim)} ${f(r.ryo + r.rim)} 0 0 1 ${f(r.cx + r.rxo + r.rim)} ${f(r.cy)}"/>`;
-  const ticks = [];
-  for (let deg = 180; deg <= 360; deg += 5) {
-    const major = deg % 30 === 0;
-    const out = major ? r.tickMajor : r.tickMinor;
-    const [x1, y1] = solarPt(r.rxo + r.rim, r.ryo + r.rim, deg);
-    const [x2, y2] = solarPt(r.rxo + out, r.ryo + out, deg);
-    ticks.push(`<line class="tick" x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" opacity="${major ? "0.85" : "0.4"}"/>`);
-  }
-  return rim + ticks.join("");
-}
-
-/* Viñeta: curvatura de la banda. El path se dibuja después de las cuñas y
-   sus etiquetas internas, y antes de las etiquetas con línea guía para que
-   no las cubra. */
-const solarVigDefs = `<defs><radialGradient id="solar-vig" cx="50%" cy="100%" r="100%">
-    <stop offset="55%" stop-color="rgba(9,9,11,0)"/>
-    <stop offset="100%" stop-color="rgba(9,9,11,.4)"/>
-  </radialGradient></defs>`;
-const solarVignette = `<path d="M0 0H1380V320H0Z" fill="url(#solar-vig)" pointer-events="none"/>`;
-
-function renderSolar(byType, total, selected) {
-  const { wedges, all } = solarBuckets(byType);
+/* La rueda: un arco anular por tipo (count / observaciones cargadas × 360°,
+   arrancando a -90°, con 1.2° de hueco entre vecinos), su tono al 0.88 y, en
+   los arcos de 12° o más, la etiqueta sobre un textPath a radio 200. El hueco
+   muestra el total del ámbito cargado y la cuota de la ventana; el hover y la
+   selección lo reescriben por tipo. */
+function renderWheel(byType, total, selected, scopeTotal) {
+  const { wedges, all } = wheelBuckets(byType);
   const breakdown = all.map(([t, c]) => `${t} ${c}`).join(", ") || "sin tipos";
-  /* El hueco muestra el tipo seleccionado (número, unidad y barra de
-     participación); sin cuñas muestra el agregado del ámbito cargado. */
-  const sel = wedges.find(([t]) => t === selected);
-  const hole = sel
-    ? `<div class="solar-hole">
-      <div class="num" data-hole-num>${sel[1]}</div>
-      <div class="unit" data-hole-unit>${esc(sel[0].replace(/_/g, " "))}</div>
-      <div class="solar-share">
-        <span class="track"><i data-hole-bar style="width:${pct(sel[1], total).toFixed(1)}%;background:${typeColor(sel[0])}"></i></span>
-        <span class="v" data-hole-pct>${fmtPct(sel[1], total)}</span>
-      </div>
-    </div>`
-    : `<div class="solar-hole">
+  const hole = `<div class="wheel-hole">
       <div class="num" data-hole-num>${total}</div>
-      <div class="unit" data-hole-unit>${esc(scopeLabel())}</div>
+      <div class="unit" data-hole-unit>Observaciones</div>
+      <div class="share">
+        <span class="track"><i data-hole-bar style="width:${pct(total, scopeTotal).toFixed(1)}%;background:${ACCENT}"></i></span>
+        <span class="v" data-hole-pct>${fmtPct(total, scopeTotal)}</span>
+      </div>
     </div>`;
   if (!wedges.length) {
-    return `<div class="solar">
-      <svg class="band" viewBox="-30 0 1380 320" role="img" aria-label="Sin observaciones activas en el ámbito."></svg>
-      ${hole}
-      ${solarWindows()}
-    </div>`;
+    return `<svg viewBox="0 0 560 560" role="img" aria-label="Sin observaciones activas en el ámbito."></svg>
+      ${hole}`;
   }
-  const n = wedges.length;
-  const usable = 180 - n * SOLAR_GEO.gap;
-  let a = 180;
+  let a = -90;
   const parts = [];
-  const leads = [];
-  for (const [type, count] of wedges) {
-    const span = total ? (count / total) * usable : 0;
-    const a0 = a + SOLAR_GEO.gap / 2;
-    const a1 = a + span + SOLAR_GEO.gap / 2;
+  wedges.forEach(([type, count], i) => {
+    const span = total ? (count / total) * 360 : 0;
+    const drawn = Math.max(span - WHEEL_GEO.gap, 0.3);
+    const a0 = a + WHEEL_GEO.gap / 2;
+    const a1 = a0 + drawn;
     const on = type === selected;
     const color = typeColor(type);
     const name = type.replace(/_/g, " ");
-    parts.push(`<path class="wedge${on ? " on" : ""}" data-type="${esc(type)}" d="${solarSector(a0, a1)}"
-      fill="${color}" fill-opacity="${on ? "0.92" : "0.34"}" stroke="${color}" stroke-opacity="0.55" stroke-width="0.8"
+    const mid = (a0 + a1) / 2;
+    parts.push(`<path class="wheel-arc${on ? " on" : ""}" data-type="${esc(type)}" data-mid="${mid.toFixed(2)}"
+      d="${wheelSector(a0, a1)}" fill="${color}" style="fill-opacity:${on ? "1" : "0.88"}"
+      ${on ? wheelOutset(mid) : ""}
       role="button" tabindex="0" aria-pressed="${on}"
-      aria-label="${esc(name)}: ${count} observaciones, ${fmtPct(count, total)} del total"/>`);
-    /* Etiqueta horizontal solo donde la cuña tiene ancho para sostenerla; las
-       angostas se identifican al pasar el puntero o el foco, que escriben
+      aria-label="${esc(name)}: ${count} observaciones, ${fmtPct(count, total)} del total. Activa para filtrar Memories por este tipo."/>`);
+    /* Etiqueta sobre el arco solo donde hay ancho para sostenerla (≥ 12°);
+       las angostas se identifican al pasar el puntero o el foco, que escriben
        nombre y conteo en el hueco. */
-    if (span >= SOLAR_GEO.minLabelDeg) {
-      const mid = (a0 + a1) / 2;
-      const [lx, ly] = solarPt(SOLAR_GEO.labelRx, SOLAR_GEO.labelRy, mid);
-      parts.push(`<text class="wlabel" x="${lx.toFixed(2)}" y="${ly.toFixed(2)}"
-        text-anchor="middle" dominant-baseline="middle">${esc(name)} <tspan class="wcount">${count}</tspan></text>`);
-    } else {
-      /* Cuña angosta: línea guía hacia el carril derecho, sin etiqueta en la
-         banda; el anclaje sale del punto medio del borde exterior. */
-      const mid = (a0 + a1) / 2;
-      const [ax, ay] = solarPt(SOLAR_GEO.rxo, SOLAR_GEO.ryo, mid);
-      const [bx, by] = solarPt(SOLAR_GEO.rxo + SOLAR_GEO.leadOut, SOLAR_GEO.ryo + SOLAR_GEO.leadOut, mid);
-      leads.push({ type, count, ax, ay, bx, by });
+    if (span >= WHEEL_GEO.minLabelDeg) {
+      parts.push(`<path id="wl-${i}" d="${wheelLabelArc(a0, a1)}" fill="none"/>
+        <text class="wheel-label"><textPath href="#wl-${i}" startOffset="50%" text-anchor="middle">${esc(name.toUpperCase())}</textPath></text>`);
     }
     a += span;
-  }
-  /* Etiquetas con línea guía: se ordenan por y y se empujan hacia abajo para
-     sostener un mínimo de 15 px entre vecinas, sin tocarse nunca. */
-  const leadHtml = (() => {
-    if (!leads.length) return "";
-    const f = (n) => n.toFixed(2);
-    const R = SOLAR_GEO.rightCol;
-    leads.sort((p, q) => p.by - q.by);
-    let lastY = -Infinity;
-    return leads.map((l) => {
-      const y = Math.max(l.by, lastY + SOLAR_GEO.leadGap);
-      lastY = y;
-      return `<g><path class="lead" d="M${f(l.ax)} ${f(l.ay)}L${f(l.bx)} ${f(l.by)}L${R} ${f(y)}"/>
-        <circle cx="${f(l.ax)}" cy="${f(l.ay)}" r="2" fill="${typeColor(l.type)}"/>
-        <text class="wlabel small" x="${R + 8}" y="${f(y + 3)}" text-anchor="start">${esc(l.type.replace(/_/g, " "))} <tspan class="wcount">${l.count}</tspan></text></g>`;
-    }).join("");
-  })();
-  return `<div class="solar">
-    <svg class="band" viewBox="-30 0 1380 320" role="img"
-      aria-label="Distribución de ${total} observaciones en ${all.length} tipos. Cada cuña es un tipo y actúa como pestaña. ${breakdown}.">
-      ${solarVigDefs}
-      ${solarRim()}
+  });
+  return `<svg viewBox="0 0 560 560" role="img"
+      aria-label="Distribución de ${total} observaciones en ${all.length} tipos. Cada arco es un tipo y actúa como enlace a Memories filtrado. ${breakdown}.">
       ${parts.join("")}
-      ${solarVignette}
-      ${leadHtml}
     </svg>
-    ${hole}
-    ${solarWindows()}
-  </div>`;
+    ${hole}`;
 }
 
-/* Encabezado del tipo seleccionado: swatch en su tono, nombre y la línea de
-   datos con conteo, cuota y la ventana realmente cargada. */
-function renderTypehead(type, count, total, loaded, scopeTotal) {
-  return `<div class="typehead">
-    <span class="swatch" style="background:${typeColor(type)}"></span>
-    <div>
-      <h1>${esc(type.replace(/_/g, " "))}</h1>
-      <div class="fact"><b>${count}</b> observaciones · <b>${fmtPct(count, total)}</b> del total · ventana cargada ${loaded} de ${scopeTotal}</div>
-    </div>
+/* Celda de los cuatro números bajo la rueda: etiqueta en mayúsculas, valor
+   mono y una nota de una línea. */
+const statCell = (k, v, s) => `
+  <div class="stat-cell">
+    <div class="k">${esc(k)}</div>
+    <div class="v">${esc(String(v))}</div>
+    <div class="s">${esc(s)}</div>
   </div>`;
-}
-
-/* Ledger del tipo seleccionado: hairlines con hora, título, preview y meta.
-   "otros" no existe como tipo en el motor: se pide el ámbito y se filtra por
-   los tipos agrupados en la cuña. */
-const hhmm = (s) => {
-  const d = new Date(parseTs(s));
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
-};
-
-const solarRow = (o) => `
-  <div class="lrow" data-obs-id="${o.id}">
-    <span class="h">${esc(hhmm(o.created_at))}</span>
-    <div>
-      <div class="t">${esc(o.title)}</div>
-      <div class="p">${mdPreview(o.content, 160)}</div>
-      <div class="meta">${esc(o.project || "—")} · ${esc(o.topic_key || "—")}</div>
-    </div>
-    <span class="tpill" style="--c:${typeColor(o.type)}">${esc(String(o.type || "otro").replace(/_/g, " "))}</span>
-    <span class="when" title="${esc(fmtDT(o.updated_at))}">${esc(rel(o.updated_at))}</span>
-  </div>`;
-
-async function fillSolarLedger(view, type) {
-  const host = $("#solar-ledger");
-  if (!host) return;
-  host.innerHTML = loading();
-  try {
-    const qs = scopeQS({ limit: 1000 });
-    if (type !== "otros") qs.set("type", type);
-    const data = await api(`/api/observations?${qs}`);
-    let items = data.observations || [];
-    if (type === "otros") items = items.filter((o) => solarModel.tail.includes(o.type || "other"));
-    items = items
-      .sort((x, y) => String(y.updated_at || "").localeCompare(String(x.updated_at || "")))
-      .slice(0, 100);
-    if (!items.length) {
-      host.innerHTML = empty("Sin memorias", `No hay memorias de tipo ${esc(type.replace(/_/g, " "))} en ${esc(scopeLabel())}.`);
-      return;
-    }
-    host.innerHTML = `<div class="ledger">${items.map(solarRow).join("")}</div>`;
-    host.querySelectorAll("[data-obs-id]").forEach((el) => {
-      el.onclick = () => openObservationFromList(el.dataset.obsId);
-    });
-  } catch (err) {
-    host.innerHTML = banner(err);
-  }
-}
 
 /* --- Overview ---------------------------------------------------------------- */
 
@@ -746,10 +773,12 @@ async function viewOverview(view) {
     const t = data.totals;
     const a = data.activity;
     const loaded = data.observations_loaded || 0;
-    const { wedges, tail } = solarBuckets(a.by_type);
+    const { wedges, tail } = wheelBuckets(a.by_type);
     solarModel = { total: loaded, wedges, tail, loaded, scopeTotal: t.observations };
-    if (!wedges.some(([ty]) => ty === solarSelected)) {
-      solarSelected = wedges.length ? wedges[0][0] : "";
+    /* La selección ya no se precarga: sin hover ni selección, el hueco muestra
+       el total y la cuota de la ventana cargada. */
+    if (solarSelected && !wedges.some(([ty]) => ty === solarSelected)) {
+      solarSelected = "";
     }
 
     setPulses([
@@ -762,7 +791,7 @@ async function viewOverview(view) {
     ]);
 
     /* Sin tiles ni carriles: los contadores globales viven en la cinta del pie
-       y el detalle por tipo vive en el encabezado y el ledger de la banda. */
+       y el detalle por tipo se alcanza desde la rueda, que filtra Memories. */
     setTicker([
       ["observaciones", t.observations], ["sesiones", t.sessions],
       ["proyectos", t.projects], ["tipos", wedges.length],
@@ -770,18 +799,19 @@ async function viewOverview(view) {
       ["cargadas", loaded], ["cargado", rel(data.loaded_at)],
     ]);
 
-    const sel = wedges.find(([ty]) => ty === solarSelected) || ["", 0];
     view.innerHTML = `
-      ${renderSolar(a.by_type, loaded, solarSelected)}
-      ${wedges.length ? renderTypehead(sel[0], sel[1], loaded, loaded, t.observations) : ""}
-      <div id="solar-ledger"></div>`;
+      <div class="wheel">
+        ${renderWheel(a.by_type, loaded, solarSelected, t.observations)}
+        ${wheelWindows()}
+      </div>
+      <div class="stats-row">
+        ${statCell("Observaciones", t.observations, `ventana cargada ${loaded} de ${t.observations}`)}
+        ${statCell("Sesiones", t.sessions, `en ${scopeLabel()}`)}
+        ${statCell("Proyectos", t.projects, "ámbitos con memoria activa")}
+        ${statCell("Últimas 24 h", a.d1, `${a.d7} en 7 días · ${a.d30} en 30 d`)}
+      </div>`;
 
-    wireSolar(view);
-    if (!wedges.length) {
-      $("#solar-ledger").innerHTML = empty("Sin observaciones", "Engram todavía no tiene memoria en este ámbito.");
-    } else {
-      await fillSolarLedger(view, solarSelected);
-    }
+    wireWheel(view);
   } catch (err) {
     setApiStatus(false);
     view.innerHTML = banner(err);
@@ -801,10 +831,10 @@ function wireObsCards(root) {
   });
 }
 
-/* El hueco: el tipo bajo el puntero o el foco escribe número, unidad y barra
-   de participación; al salir vuelve el tipo seleccionado (o el agregado del
-   ámbito si no hay selección). */
-function solarShowHole(view, type) {
+/* El hueco: el arco bajo el puntero o el foco escribe número, unidad y barra
+   de participación en su tono; al salir vuelve la selección (o el total del
+   ámbito con la cuota de la ventana cargada). */
+function wheelShowHole(view, type) {
   const num = $("[data-hole-num]", view);
   const unit = $("[data-hole-unit]", view);
   const bar = $("[data-hole-bar]", view);
@@ -813,42 +843,48 @@ function solarShowHole(view, type) {
   if (!w || !num || !unit) return;
   num.textContent = w[1];
   unit.textContent = type.replace(/_/g, " ");
-  const p = pct(w[1], solarModel.total).toFixed(1);
   if (bar) {
-    bar.style.width = `${p}%`;
+    bar.style.width = `${pct(w[1], solarModel.total).toFixed(1)}%`;
     bar.style.background = typeColor(type);
   }
   if (pctEl) pctEl.textContent = fmtPct(w[1], solarModel.total);
 }
 
-function solarShowScope(view) {
+function wheelShowScope(view) {
   const num = $("[data-hole-num]", view);
   const unit = $("[data-hole-unit]", view);
+  const bar = $("[data-hole-bar]", view);
+  const pctEl = $("[data-hole-pct]", view);
   if (!num || !unit) return;
   num.textContent = solarModel.total;
-  unit.textContent = scopeLabel();
+  unit.textContent = "Observaciones";
+  if (bar) {
+    bar.style.width = `${pct(solarModel.total, solarModel.scopeTotal).toFixed(1)}%`;
+    bar.style.background = ACCENT;
+  }
+  if (pctEl) pctEl.textContent = fmtPct(solarModel.total, solarModel.scopeTotal);
 }
 
-function wireSolar(view) {
+function wireWheel(view) {
   const restore = () => {
     if (solarSelected && solarModel.wedges.some(([t]) => t === solarSelected)) {
-      solarShowHole(view, solarSelected);
+      wheelShowHole(view, solarSelected);
     } else {
-      solarShowScope(view);
+      wheelShowScope(view);
     }
   };
-  view.querySelectorAll(".wedge").forEach((w) => {
-    const type = w.dataset.type;
-    const hot = () => w.setAttribute("fill-opacity", w.classList.contains("on") ? "0.92" : "0.72");
-    const rest = () => w.setAttribute("fill-opacity", w.classList.contains("on") ? "0.92" : "0.34");
-    w.addEventListener("mouseenter", () => { hot(); solarShowHole(view, type); });
-    w.addEventListener("mouseleave", restore);
-    w.addEventListener("focus", () => { hot(); solarShowHole(view, type); });
-    w.addEventListener("blur", restore);
-    w.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectSolarType(view, type); }
+  view.querySelectorAll(".wheel-arc").forEach((arc) => {
+    const type = arc.dataset.type;
+    const hot = () => { arc.style.fillOpacity = "1"; };
+    const rest = () => { arc.style.fillOpacity = arc.classList.contains("on") ? "1" : "0.88"; };
+    arc.addEventListener("mouseenter", () => { hot(); wheelShowHole(view, type); });
+    arc.addEventListener("mouseleave", () => { rest(); restore(); });
+    arc.addEventListener("focus", () => { hot(); wheelShowHole(view, type); });
+    arc.addEventListener("blur", () => { rest(); restore(); });
+    arc.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openMemoriesFiltered(type); }
     });
-    w.addEventListener("click", () => selectSolarType(view, type));
+    arc.addEventListener("click", () => openMemoriesFiltered(type));
   });
   /* Ventana visual: sin desglose por tipo por ventana en la API. */
   const win = view.querySelectorAll(".windows button");
@@ -860,26 +896,15 @@ function wireSolar(view) {
   restore();
 }
 
-/* Selección: repinta cuñas, encabezado y ledger sin cambiar de ruta. */
-function selectSolarType(view, type) {
-  solarSelected = type;
-  const w = solarModel.wedges.find(([t]) => t === type) || ["", 0];
-  view.querySelectorAll(".wedge").forEach((p) => {
-    const on = p.dataset.type === type;
-    p.classList.toggle("on", on);
-    p.setAttribute("aria-pressed", String(on));
-    p.setAttribute("fill-opacity", on ? "0.92" : "0.34");
-  });
-  const head = view.querySelector(".typehead");
-  if (head) {
-    $(".swatch", head).style.background = typeColor(type);
-    $("h1", head).textContent = type.replace(/_/g, " ");
-    $(".fact", head).innerHTML =
-      `<b>${w[1]}</b> observaciones · <b>${fmtPct(w[1], solarModel.total)}</b> del total · ventana cargada ${solarModel.loaded} de ${solarModel.scopeTotal}`;
-  }
-  /* El hueco acompaña la selección (Enter/Espacio sin puntero encima). */
-  solarShowHole(view, type);
-  fillSolarLedger(view, type);
+/* El arco es la navegación: fija el mismo state.type que marcan los chips de
+   Memories y enruta a #/memories, donde el filtro llega aplicado por el router
+   y con el chip del tipo marcado como activo. "otros" agrupa tipos del motor
+   sin un filtro único equivalente: abre Memories sin filtro de tipo. */
+function openMemoriesFiltered(type) {
+  const filter = type === "otros" ? "" : type;
+  solarSelected = filter;
+  state.type = filter;
+  location.hash = "#/memories";
 }
 
 /* El radar no gira con la pestaña oculta ni con movimiento reducido. Al volver
@@ -1088,49 +1113,99 @@ function renderMemResults() {
 
 /* --- Sessions --------------------------------------------------------------------- */
 
+const SESSIONS_LIMIT = 500;   /* máximo del proxy: /sessions/recent ignora offset */
+const SESSIONS_CHART_DAYS = 14;
+
+/* Serie diaria (últimos 14 días, clave UTC porque así guarda el motor) sobre
+   las sesiones cargadas; los días sin actividad van a cero y se rotula cada
+   tres columnas. */
+function sessionsByDay(sessions) {
+  const counts = {};
+  for (const s of sessions) {
+    const key = String(s.started_at || "").slice(0, 10);
+    if (key) counts[key] = (counts[key] || 0) + 1;
+  }
+  const now = Date.now();
+  const DAY = 86400000;
+  const entries = [];
+  for (let i = SESSIONS_CHART_DAYS - 1; i >= 0; i--) {
+    const key = new Date(now - i * DAY).toISOString().slice(0, 10);
+    const label = `${key.slice(8, 10)}/${key.slice(5, 7)}`;
+    entries.push({
+      label,
+      value: counts[key] || 0,
+      axis: (SESSIONS_CHART_DAYS - 1 - i) % 3 === 0 ? label : "",
+    });
+  }
+  return entries;
+}
+
 async function viewSessions(view) {
   showProjectSelect(true);
   HL.term = "";
   view.innerHTML = loading();
   try {
-    const { sessions } = await api(`/api/sessions/recent?${scopeQS({ limit: 200 }).toString()}`);
+    const { sessions } = await api(`/api/sessions/recent?${scopeQS({ limit: SESSIONS_LIMIT }).toString()}`);
     if (!sessions.length) {
       view.innerHTML = empty("Sin sesiones", `No hay sesiones registradas en ${scopeLabel()}.`);
       return;
     }
     const global = !state.project;
-    view.innerHTML = `
-      ${sessions.length >= 200 ? `<div class="notice">Se listan las <b>200</b> sesiones más recientes; acota el ámbito a un proyecto para ver el resto.</div>` : ""}
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Sesión</th>
-            ${global ? `<th style="width:150px">Proyecto</th>` : ""}
-            <th style="width:140px">Memorias</th><th style="width:180px">Inicio</th><th style="width:110px"></th></tr></thead>
-          <tbody>
-            ${sessions.map((s) => `
-              <tr data-session="${esc(s.id)}">
-                <td class="mono"><div class="cell-cut" title="${esc(s.id)}">${esc(s.id)}</div></td>
-                ${global ? `<td class="mono muted">${esc(s.project)}</td>` : ""}
-                <td><b class="mono">${s.observation_count}</b> <span class="faint">obs</span></td>
-                <td class="muted" title="${esc(fmtDT(s.started_at))}">${rel(s.started_at)}</td>
-                <td class="actions-cell">${s.observation_count === 0
-                  ? `<button class="btn danger sm" data-del-session="${esc(s.id)}" title="Borrar la sesión vacía">Eliminar</button>`
-                  : ""}</td>
-              </tr>`).join("")}
-          </tbody>
-        </table>
-      </div>`;
-    view.querySelectorAll("tr[data-session]").forEach((tr) => {
-      tr.onclick = () => { location.hash = `#/sessions/${encodeURIComponent(tr.dataset.session)}`; };
-    });
-    /* Solo sesiones vacías: el botón nunca debe terminar abriendo el detalle. */
-    view.querySelectorAll("button[data-del-session]").forEach((btn) => {
-      btn.onclick = (e) => {
-        e.stopPropagation();
-        const s = sessions.find((x) => String(x.id) === btn.dataset.delSession);
-        if (s) deleteEmptySessionFlow(s);
-      };
-    });
+    const total = scopeTotalFor("sessions");
+    /* Pager cliente: el motor ignora offset en /sessions/recent, así que se
+       cargan hasta 500 y se trocean en el navegador, diciéndolo en la info. */
+    const draw = () => {
+      const pages = Math.max(Math.ceil(sessions.length / state.sSize), 1);
+      state.sPage = Math.min(Math.max(state.sPage, 1), pages);
+      const slice = sessions.slice((state.sPage - 1) * state.sSize, state.sPage * state.sSize);
+      view.innerHTML = `
+        ${miniChartColumns(
+          `Sesiones por día en los últimos ${SESSIONS_CHART_DAYS} días, según las ${sessions.length} sesiones cargadas de ${scopeLabel()}.`,
+          sessionsByDay(sessions))}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Sesión</th>
+              ${global ? `<th style="width:150px">Proyecto</th>` : ""}
+              <th style="width:140px">Memorias</th><th style="width:180px">Inicio</th><th style="width:110px"></th></tr></thead>
+            <tbody>
+              ${slice.map((s) => `
+                <tr data-session="${esc(s.id)}">
+                  <td class="mono"><div class="cell-cut" title="${esc(s.id)}">${esc(s.id)}</div></td>
+                  ${global ? `<td class="mono muted">${esc(s.project)}</td>` : ""}
+                  <td><b class="mono">${s.observation_count}</b> <span class="faint">obs</span></td>
+                  <td class="muted" title="${esc(fmtDT(s.started_at))}">${rel(s.started_at)}</td>
+                  <td class="actions-cell">${s.observation_count === 0
+                    ? `<button class="btn danger sm" data-del-session="${esc(s.id)}" title="Borrar la sesión vacía">Eliminar</button>`
+                    : ""}</td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+        ${pagerBar({
+          name: "sessions", label: "Paginación de sesiones",
+          page: state.sPage, pages,
+          info: pagerInfoClient(state.sPage, state.sSize, sessions.length, total, "sesiones"),
+          size: state.sSize,
+        })}`;
+      view.querySelectorAll("tr[data-session]").forEach((tr) => {
+        tr.onclick = () => { location.hash = `#/sessions/${encodeURIComponent(tr.dataset.session)}`; };
+      });
+      /* Solo sesiones vacías: el botón nunca debe terminar abriendo el detalle. */
+      view.querySelectorAll("button[data-del-session]").forEach((btn) => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const s = sessions.find((x) => String(x.id) === btn.dataset.delSession);
+          if (s) deleteEmptySessionFlow(s);
+        };
+      });
+      wirePager(view, {
+        name: "sessions",
+        onPrev: () => { state.sPage -= 1; draw(); },
+        onNext: () => { state.sPage += 1; draw(); },
+        onSize: (n) => { state.sSize = n; state.sPage = 1; draw(); },
+      });
+    };
+    draw();
   } catch (err) {
     view.innerHTML = banner(err);
   }
@@ -1228,7 +1303,17 @@ async function viewProjects(view) {
 
 /* --- Prompts -------------------------------------------------------------------------- */
 
-const PROMPTS_LIMIT = 200;
+const PROMPTS_LIMIT = 500;   /* máximo del proxy: /prompts/recent ignora offset */
+
+/* Conteo de prompts por proyecto sobre lo cargado; alimenta la mini-gráfica. */
+function promptsByProject(prompts) {
+  const counts = {};
+  for (const p of prompts) {
+    const name = p.project || "sin proyecto";
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  return Object.entries(counts).map(([label, value]) => ({ label, value }));
+}
 
 async function viewPrompts(view) {
   showProjectSelect(true);
@@ -1242,36 +1327,57 @@ async function viewPrompts(view) {
       return;
     }
     const global = !state.project;
-    view.innerHTML = `
-      ${data.truncated
-        ? `<div class="notice">Se listan los <b>${prompts.length}</b> prompts más recientes de ${esc(scopeLabel())} (límite de la petición).</div>`
-        : `<div class="notice muted">Mostrando <b>${prompts.length}</b> prompts de ${esc(scopeLabel())}.</div>`}
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th style="width:80px">ID</th>
-            ${global ? `<th style="width:130px">Proyecto</th>` : ""}
-            <th style="width:180px">Sesión</th><th>Contenido</th>
-            <th style="width:120px">Creado</th><th style="width:110px"></th></tr></thead>
-          <tbody>
-            ${prompts.map((p) => `
-              <tr data-prompt-id="${esc(p.id)}">
-                <td class="mono muted">#${esc(p.id)}</td>
-                ${global ? `<td class="mono muted" title="${esc(p.project)}"><div class="cell-cut">${esc(p.project)}</div></td>` : ""}
-                <td class="mono muted"><div class="cell-cut" title="${esc(p.session_id)}">${esc(p.session_id)}</div></td>
-                <td><div class="preview">${highlight(esc(String(p.content || "").slice(0, 220)))}</div></td>
-                <td class="muted" title="${esc(fmtDT(p.created_at))}">${rel(p.created_at)}</td>
-                <td class="actions-cell"><button class="btn danger sm" data-del-prompt="${esc(p.id)}"
-                  title="Borrar el prompt de forma permanente">Eliminar</button></td>
-              </tr>`).join("")}
-          </tbody>
-        </table>
-      </div>`;
-    view.querySelectorAll("button[data-del-prompt]").forEach((btn) => {
-      btn.onclick = () => {
-        const p = prompts.find((x) => String(x.id) === btn.dataset.delPrompt);
-        if (p) deletePromptFlow(p);
-      };
-    });
+    const total = scopeTotalFor("prompts");
+    /* Pager cliente: el motor ignora offset en /prompts/recent, así que se
+       cargan hasta 500 y se trocean en el navegador, diciéndolo en la info. */
+    const draw = () => {
+      const pages = Math.max(Math.ceil(prompts.length / state.pSize), 1);
+      state.pPage = Math.min(Math.max(state.pPage, 1), pages);
+      const slice = prompts.slice((state.pPage - 1) * state.pSize, state.pPage * state.pSize);
+      view.innerHTML = `
+        ${miniChartRows(
+          `Prompts por proyecto, según los ${prompts.length} prompts cargados de ${scopeLabel()}.`,
+          promptsByProject(prompts))}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th style="width:80px">ID</th>
+              ${global ? `<th style="width:130px">Proyecto</th>` : ""}
+              <th style="width:180px">Sesión</th><th>Contenido</th>
+              <th style="width:120px">Creado</th><th style="width:110px"></th></tr></thead>
+            <tbody>
+              ${slice.map((p) => `
+                <tr data-prompt-id="${esc(p.id)}">
+                  <td class="mono muted">#${esc(p.id)}</td>
+                  ${global ? `<td class="mono muted" title="${esc(p.project)}"><div class="cell-cut">${esc(p.project)}</div></td>` : ""}
+                  <td class="mono muted"><div class="cell-cut" title="${esc(p.session_id)}">${esc(p.session_id)}</div></td>
+                  <td><div class="preview">${highlight(esc(String(p.content || "").slice(0, 220)))}</div></td>
+                  <td class="muted" title="${esc(fmtDT(p.created_at))}">${rel(p.created_at)}</td>
+                  <td class="actions-cell"><button class="btn danger sm" data-del-prompt="${esc(p.id)}"
+                    title="Borrar el prompt de forma permanente">Eliminar</button></td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+        ${pagerBar({
+          name: "prompts", label: "Paginación de prompts",
+          page: state.pPage, pages,
+          info: pagerInfoClient(state.pPage, state.pSize, prompts.length, total, "prompts"),
+          size: state.pSize,
+        })}`;
+      view.querySelectorAll("button[data-del-prompt]").forEach((btn) => {
+        btn.onclick = () => {
+          const p = prompts.find((x) => String(x.id) === btn.dataset.delPrompt);
+          if (p) deletePromptFlow(p);
+        };
+      });
+      wirePager(view, {
+        name: "prompts",
+        onPrev: () => { state.pPage -= 1; draw(); },
+        onNext: () => { state.pPage += 1; draw(); },
+        onSize: (n) => { state.pSize = n; state.pPage = 1; draw(); },
+      });
+    };
+    draw();
   } catch (err) {
     view.innerHTML = banner(err);
   }
@@ -1546,22 +1652,65 @@ const RELATION_LABELS = {
   scoped: "acotada", supersedes: "sustituye", conflicts_with: "en conflicto",
 };
 
+/* Mismo tono que las insignias de juicio (t-session_summary, t-discovery, t-bugfix). */
+const JUDGMENT_HUE = { pending: "#ea1889", judged: "#34d399", orphaned: "#f87171" };
+
+/* Mezcla de relación/revisión: una barra por estado de juicio más la cola de
+   revisión vencida. Todo sale de las respuestas que la vista ya pide. */
+function healthChartEntries(stats, review) {
+  const by = (stats && stats.by_judgment_status) || {};
+  const entries = [
+    { label: "pendientes", value: by.pending ?? 0, color: JUDGMENT_HUE.pending },
+    { label: "juzgadas", value: by.judged ?? 0, color: JUDGMENT_HUE.judged },
+    { label: "huérfanas", value: by.orphaned ?? 0, color: JUDGMENT_HUE.orphaned },
+  ];
+  if (review && review.count) {
+    entries.push({ label: "revisión vencida", value: review.count, color: "#fbbf24" });
+  }
+  return entries;
+}
+
 async function viewHealth(view) {
   showProjectSelect(true);
   HL.term = "";
   view.innerHTML = loading();
-  const scope = scopeQS({ limit: 100, offset: state.cOffset });
+  const scope = scopeQS({ limit: state.cLimit, offset: state.cOffset });
   if (state.cStatus) scope.set("status", state.cStatus);
   try {
     const page = await api(`/api/conflicts?${scope}`);
     const [stats, review] = await Promise.all([
       api(`/api/conflicts/stats?${scopeQS()}`).catch(() => null),
-      api(`/api/review?${scopeQS({ limit: 100 })}`).catch(() => null),
+      api(`/api/review?${scopeQS({ limit: state.rLimit, offset: state.rOffset })}`).catch(() => null),
     ]);
     const relations = [...(page.relations || [])];
     const relationsShown = state.cRelation
       ? relations.filter((r) => r.relation === state.cRelation) : relations;
     const relationTypes = [...new Set(relations.map((r) => r.relation))].sort();
+
+    /* Pager de servidor: /api/conflicts y /api/review sí reenvían offset a
+       través de _paging_params. Sin total en la respuesta no hay pager: nada
+       que inventar. */
+    const relationsTotal = page.total ?? null;
+    const relationsPages = relationsTotal
+      ? Math.max(Math.ceil(relationsTotal / state.cLimit), 1) : 1;
+    const relationsPage = Math.min(Math.floor(state.cOffset / state.cLimit) + 1, relationsPages);
+    state.cOffset = (relationsPage - 1) * state.cLimit;
+    const relationsPager = pagerBar({
+      name: "relations", label: "Paginación de relaciones",
+      page: relationsPage, pages: relationsPages,
+      info: relationsTotal ? pagerInfoServer(relationsPage, state.cLimit, relationsTotal, "relaciones") : "",
+      size: state.cLimit,
+    });
+    const reviewTotal = review && review.count ? review.count : null;
+    const reviewPages = reviewTotal ? Math.max(Math.ceil(reviewTotal / state.rLimit), 1) : 1;
+    const reviewPage = Math.min(Math.floor(state.rOffset / state.rLimit) + 1, reviewPages);
+    state.rOffset = (reviewPage - 1) * state.rLimit;
+    const reviewPager = pagerBar({
+      name: "review", label: "Paginación de la cola de revisión",
+      page: reviewPage, pages: reviewPages,
+      info: reviewTotal ? pagerInfoServer(reviewPage, state.rLimit, reviewTotal, "memorias") : "",
+      size: state.rLimit,
+    });
 
     view.innerHTML = `
       <div class="grid cols-3" style="margin-bottom:18px">
@@ -1595,6 +1744,10 @@ async function viewHealth(view) {
         </div>
       </div>
 
+      ${miniChartRows(
+        `Mezcla de juicio y revisión de memoria en ${scopeLabel()}: relaciones pendientes, juzgadas y huérfanas, más las memorias con revisión vencida.`,
+        healthChartEntries(stats, review))}
+
       ${review && review.count ? `
         <div class="card" style="margin-bottom:18px">
           <h3>Cola de revisión</h3>
@@ -1609,6 +1762,7 @@ async function viewHealth(view) {
                 </tr>`).join("")}
             </tbody>
           </table></div>
+          ${reviewPager}
         </div>` : ""}
 
       <div class="card">
@@ -1642,10 +1796,7 @@ async function viewHealth(view) {
             </tbody>
           </table></div>`
           : empty("Sin relaciones", `No hay relaciones ${state.cStatus ? `en estado ${state.cStatus} ` : ""}en ${scopeLabel()}.`)}
-        ${relations.length < (page.total || 0) ? `
-          <div style="text-align:center;margin-top:14px">
-            <button class="btn" id="conf-more">Cargar más (${(page.total || 0) - relations.length} restantes)</button>
-          </div>` : ""}
+        ${relationsPager}
       </div>`;
 
     $("#conf-status").value = state.cStatus;
@@ -1654,8 +1805,18 @@ async function viewHealth(view) {
     };
     $("#conf-relation").value = state.cRelation;
     $("#conf-relation").onchange = (e) => { state.cRelation = e.target.value; viewHealth(view); };
-    const more = $("#conf-more");
-    if (more) more.onclick = () => { state.cOffset += (page.limit || 100); viewHealth(view); };
+    wirePager(view, {
+      name: "review",
+      onPrev: () => { state.rOffset = Math.max(state.rOffset - state.rLimit, 0); viewHealth(view); },
+      onNext: () => { state.rOffset += state.rLimit; viewHealth(view); },
+      onSize: (n) => { state.rLimit = n; state.rOffset = 0; viewHealth(view); },
+    });
+    wirePager(view, {
+      name: "relations",
+      onPrev: () => { state.cOffset = Math.max(state.cOffset - state.cLimit, 0); viewHealth(view); },
+      onNext: () => { state.cOffset += state.cLimit; viewHealth(view); },
+      onSize: (n) => { state.cLimit = n; state.cOffset = 0; viewHealth(view); },
+    });
     view.querySelectorAll("tr[data-relation]").forEach((tr) => {
       tr.onclick = () => showRelation(tr.dataset.relation);
     });
@@ -1828,6 +1989,9 @@ $("#project-select").addEventListener("change", (e) => {
   state.session = "";
   state.offset = 0;
   state.cOffset = 0;
+  state.rOffset = 0;
+  state.pPage = 1;
+  state.sPage = 1;
   state.obsIndex = null;
   localStorage.setItem("dash.project", state.project);
   route();
