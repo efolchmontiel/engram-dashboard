@@ -145,6 +145,8 @@ const state = {
   rOffset: 0, rLimit: 100,
   pPage: 1, pSize: 50, sPage: 1, sSize: 50,
   obsIndex: null, focusSearch: false,
+  /* Vista activa según route(): la consulta el parche en vivo del overview. */
+  currentView: "overview",
 };
 
 /* Parámetros de ámbito: proyecto concreto o todos. */
@@ -703,42 +705,69 @@ const RADIAL_MAX = 9;
    su cuota de las observaciones cargadas, con hueco a las 12 en punto. Sin
    texto dentro del radial: cada anillo se identifica por su color, y las
    barras del panel derecho (mismo tipo en data-bar) dan recuento y cuota. */
-function renderRadial(byType, total) {
+
+/* Agrupación de tipos en anillos: los RADIAL_MAX - 1 más pesados más un anillo
+   "otros" con la cola. La usan el render inicial y el parche en vivo. */
+function radialRingsData(byType) {
   const all = Object.entries(byType || {}).sort((a, b) => b[1] - a[1]);
   const head = all.slice(0, RADIAL_MAX - (all.length > RADIAL_MAX ? 1 : 0));
   const tail = all.slice(head.length);
   const ringsData = tail.length
     ? [...head, ["otros", tail.reduce((acc, [, n]) => acc + n, 0)]]
     : all;
+  return { all, ringsData };
+}
 
-  const S = 420, cx = 210, cy = 210, rOut = 200, rIn = 62, GAP_DEG = 16;
+/* Geometría compartida de los anillos: radios, paso y ancho de trazo. El
+   parche en vivo recomputa con esta misma función, así los arcos siempre
+   suman igual que en el render inicial. */
+function radialGeometry(ringsData) {
+  const cx = 210, cy = 210, rOut = 200, rIn = 62, GAP_DEG = 16;
   const n = ringsData.length;
   const step = n ? (rOut - rIn) / n : 0;
   const width = Math.max(4, Math.min(13, step * 0.62));
+  return { cx, cy, rOut, rIn, GAP_DEG, step, width };
+}
 
+/* Única fuente de la matemática de arcos: circunferencia completa menos el
+   hueco de las 12 en punto, escalada por la cuota del tipo sobre el total.
+   La comparten el render inicial y el refresco en vivo. */
+function ringArcLength(r, gapDeg, count, total) {
+  const C = 2 * Math.PI * r;
+  const gap = (C * gapDeg) / 360;
+  return { circumference: C, arc: (C - gap) * (total ? count / total : 0) };
+}
+
+/* Círculos del radial (tracks + arcos). El parche en vivo regenera este mismo
+   markup cuando cambia el conjunto de tipos; los ganchos data-live permiten
+   actualizar dasharray en sitio cuando no cambió. */
+function radialRingCircles(ringsData, total) {
+  const { cx, cy, rOut, GAP_DEG, step, width } = radialGeometry(ringsData);
   const rings = ringsData.map(([type, count], i) => {
     const r = rOut - step * (i + 0.5);
-    const C = 2 * Math.PI * r;
-    const gap = (C * GAP_DEG) / 360;
-    const arc = (C - gap) * (total ? count / total : 0);
+    const { circumference: C, arc } = ringArcLength(r, GAP_DEG, count, total);
     /* La paleta actual define "otros" en TYPE_HUE: sin color especial. */
     const color = typeColor(type);
     return `
       <circle class="mc-ring-track" cx="${cx}" cy="${cy}" r="${r}" stroke-width="${width}"/>
-      <circle class="mc-ring-arc" data-ring="${esc(type)}" cx="${cx}" cy="${cy}" r="${r}" stroke="${color}"
+      <circle class="mc-ring-arc" data-ring="${esc(type)}" data-live="ring-${esc(type)}" cx="${cx}" cy="${cy}" r="${r}" stroke="${color}"
         style="--w:${width}" stroke-width="${width}" stroke-dasharray="${arc} ${C - arc}"
         transform="rotate(${-90 + GAP_DEG / 2} ${cx} ${cy})" tabindex="0" role="button"
         aria-label="${esc(type)}: ${count} memorias, ${fmtPct(count, total)}. Activa para abrir Memories filtrado por este tipo."><title>${esc(type)}: ${count} (${fmtPct(count, total)})</title></circle>`;
   });
 
-  if (!n) {
+  if (!ringsData.length) {
     rings.push(`
       <circle class="mc-ring-track" cx="${cx}" cy="${cy}" r="${(rOut + rIn) / 2}" stroke-width="10"
         stroke-dasharray="3 9" stroke-linecap="round"/>`);
   }
+  return rings.join("");
+}
 
+function renderRadial(byType, total) {
+  const { all, ringsData } = radialRingsData(byType);
   const breakdown = all.map(([t, c]) => `${t} ${c}`).join(", ") || "sin tipos";
-  return `<svg viewBox="0 0 ${S} ${S}" role="img"
+  return `<svg viewBox="0 0 420 420" role="img" data-live="radial-svg"
       aria-label="Distribución por tipo: ${total} observaciones en ${all.length} tipos. ${breakdown}.">
     <defs>
       <linearGradient id="mc-sweep-grad" x1="210" y1="10" x2="304.1" y2="33.4" gradientUnits="userSpaceOnUse">
@@ -751,8 +780,8 @@ function renderRadial(byType, total) {
         <stop offset="1" stop-color="${ACCENT}" stop-opacity="0"/>
       </radialGradient>
     </defs>
-    <circle cx="${cx}" cy="${cy}" r="96" fill="url(#mc-core-glow)"/>
-    ${rings.join("")}
+    <circle cx="210" cy="210" r="96" fill="url(#mc-core-glow)"/>
+    <g data-live="rings-group">${radialRingCircles(ringsData, total)}</g>
     <g class="mc-sweep">
       <path d="M210 210 L210 10 A200 200 0 0 1 304.1 33.4 Z" fill="url(#mc-sweep-grad)"/>
       <line class="mc-sweep-edge" x1="210" y1="210" x2="304.1" y2="33.4"/>
@@ -760,10 +789,12 @@ function renderRadial(byType, total) {
   </svg>`;
 }
 
-/* Serie diaria real (activity.by_day). Sin dato no se dibuja línea. */
-function renderSpark(byDay) {
+/* Serie diaria real (activity.by_day). Sin dato no se dibuja línea. La
+   matemática del path vive en sparkPathData para que el parche en vivo
+   recompute la d exactamente igual que el render. */
+function sparkPathData(byDay) {
   const days = Object.entries(byDay || {});
-  if (days.length < 2) return "";
+  if (days.length < 2) return null;
   const W = 200, H = 32, max = Math.max(...days.map(([, v]) => v), 1);
   const dx = W / (days.length - 1);
   const d = days.map(([, v], i) => {
@@ -771,23 +802,43 @@ function renderSpark(byDay) {
     const y = (H - 2 - (v / max) * (H - 6)).toFixed(2);
     return `${i ? "L" : "M"}${x} ${y}`;
   }).join(" ");
-  const active = days.filter(([, v]) => v > 0).length;
-  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
-      aria-label="Actividad diaria: ${active} de ${days.length} días con memoria nueva, máximo ${max}.">
-    <path class="spark-line" vector-effect="non-scaling-stroke" d="${d}"/>
+  return { days, max, d };
+}
+
+function renderSpark(byDay) {
+  const sp = sparkPathData(byDay);
+  if (!sp) return "";
+  const active = sp.days.filter(([, v]) => v > 0).length;
+  return `<svg class="spark" viewBox="0 0 200 32" preserveAspectRatio="none" role="img"
+      aria-label="Actividad diaria: ${active} de ${sp.days.length} días con memoria nueva, máximo ${sp.max}.">
+    <path class="spark-line" data-live="spark" vector-effect="non-scaling-stroke" d="${sp.d}"/>
   </svg>`;
 }
 
 /* Tile KPI: etiqueta micro, cifra dominante, unidad y caption propio. El tono
    "violet" del diseño previo usa el violeta decisión (#a78bfa) de la paleta
-   actual, igual que el mapeo que hace el CSS para .tile.violet. */
-const tile = ({ label, num, unit = "", caption, tone = "", bar = null, strip = "" }) => `
+   actual, igual que el mapeo que hace el CSS para .tile.violet.
+   `live` añade el gancho data-live que el refresco en vivo del overview
+   actualiza en sitio (cifra del tile y ancho de su barra). */
+const tile = ({ label, num, unit = "", caption, tone = "", bar = null, strip = "", live = "" }) => `
   <div class="tile ${tone}">
     <span class="eyebrow">${esc(label)}</span>
-    <span class="num">${num}${unit ? `<span class="unit">${esc(unit)}</span>` : ""}</span>
+    <span class="num"${live ? ` data-live="tile-${esc(live)}"` : ""}>${num}${unit ? `<span class="unit">${esc(unit)}</span>` : ""}</span>
     <span class="caption">${caption}</span>
-    ${bar === null ? strip : `<div class="bar-track"><div class="bar-fill" style="width:${bar}%;background:${tone === "violet" ? "#a78bfa" : "var(--accent)"}"></div></div>`}
+    ${bar === null ? strip : `<div class="bar-track"><div class="bar-fill"${live ? ` data-live="tile-bar-${esc(live)}"` : ""} style="width:${bar}%;background:${tone === "violet" ? "#a78bfa" : "var(--accent)"}"></div></div>`}
   </div>`;
+
+/* Filas de barra por tipo del panel derecho. El render inicial y el parche en
+   vivo comparten este markup: ganchos data-live para ancho y recuento. */
+function barRowsMarkup(byType, loaded) {
+  return byType.map(([type, n]) => `
+    <div class="bar-row" data-bar="${esc(type)}" tabindex="0" role="button"
+      aria-label="${esc(type)}: ${n} memorias, ${fmtPct(n, loaded)}. Activa para abrir Memories filtrado por este tipo.">
+      ${badge(type)}
+      <div class="bar-track"><div class="bar-fill" data-live="bar-${esc(type)}" style="width:${Math.max(2, Math.round(n * 100 / (loaded || 1)))}%;background:${typeColor(type)}"></div></div>
+      <span class="mono" data-live="bar-count-${esc(type)}">${n} · ${fmtPct(n, loaded)}</span>
+    </div>`).join("");
+}
 
 /* --- Overview ---------------------------------------------------------------- */
 
@@ -818,23 +869,26 @@ async function viewOverview(view) {
     ]);
 
     setTicker([
-      ["observaciones", t.observations], ["sesiones", t.sessions],
-      ["proyectos", t.projects], ["tipos", byType.length],
-      ["cargadas", loaded], ["cargado", rel(data.loaded_at)],
+      ["observaciones", t.observations, "ticker-observaciones"], ["sesiones", t.sessions, "ticker-sesiones"],
+      ["proyectos", t.projects, "ticker-proyectos"], ["tipos", byType.length, "ticker-tipos"],
+      ["cargadas", loaded, "ticker-cargadas"], ["cargado", rel(data.loaded_at), "ticker-cargado"],
     ]);
 
-    /* Sin leyenda bajo los anillos ni carriles ni línea de tiempo: el detalle
-       por tipo vive en el panel derecho, y el panorama en los tiles. */
+    /* El render inicial ya trae datos frescos: ninguna píldora pendiente. */
+    clearLivePending();
+
+    /* Ganchos data-live: el latido del store (/api/beacon) refresca esta vista
+       en sitio, nodo a nodo, sin volver a pasar por aquí ni por innerHTML. */
     view.innerHTML = `
       <div class="mc">
         <div class="mc-panel">
-          <span class="eyebrow">distribución por tipo · ${byType.length} tipo${byType.length === 1 ? "" : "s"} · ${loaded} cargadas</span>
+          <span class="eyebrow" data-live="core-eyebrow">distribución por tipo · ${byType.length} tipo${byType.length === 1 ? "" : "s"} · ${loaded} cargadas</span>
           <div class="mc-rings">
             ${renderRadial(a.by_type, loaded)}
             <div class="mc-center">
-              <span class="num">${loaded}</span>
+              <span class="num" data-live="core-num">${loaded}</span>
               <span class="unit">observaciones</span>
-              <span class="sub">${t.observations} activas en total${data.truncated ? " · ventana acotada" : ""}</span>
+              <span class="sub" data-live="core-sub">${t.observations} activas en total${data.truncated ? " · ventana acotada" : ""}</span>
             </div>
           </div>
         </div>
@@ -842,44 +896,38 @@ async function viewOverview(view) {
         <div class="mc-panel">
           <span class="eyebrow">ritmo · últimos 7 días</span>
           <div class="mc-hero">
-            <span class="num">${fmtPct(a.d7, t.observations).replace("%", "")}<span class="unit">%</span></span>
-            <span class="caption"><b>${a.d7}</b> de <b>${t.observations}</b> memorias se crearon en los últimos 7 días</span>
+            <span class="num"><span data-live="rhythm-num">${fmtPct(a.d7, t.observations).replace("%", "")}</span><span class="unit">%</span></span>
+            <span class="caption" data-live="rhythm-caption"><b>${a.d7}</b> de <b>${t.observations}</b> memorias se crearon en los últimos 7 días</span>
           </div>
-          <div class="bars">
-            ${byType.map(([type, n]) => `
-              <div class="bar-row" data-bar="${esc(type)}" tabindex="0" role="button"
-                aria-label="${esc(type)}: ${n} memorias, ${fmtPct(n, loaded)}. Activa para abrir Memories filtrado por este tipo.">
-                ${badge(type)}
-                <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, Math.round(n * 100 / (loaded || 1)))}%;background:${typeColor(type)}"></div></div>
-                <span class="mono">${n} · ${fmtPct(n, loaded)}</span>
-              </div>`).join("") || `<div class="caption muted">Sin observaciones activas en el ámbito.</div>`}
+          <div class="bars" data-live="bars-list">
+            ${barRowsMarkup(byType, loaded) || `<div class="caption muted">Sin observaciones activas en el ámbito.</div>`}
           </div>
-          <div class="mc-split">
+          <div class="mc-split" data-live="spark-split">
             <span class="eyebrow">actividad diaria · 30 d</span>
             ${renderSpark(a.by_day)}
-            <span class="val">${a.d30} en 30 d</span>
+            <span class="val" data-live="spark-val">${a.d30} en 30 d</span>
           </div>
           <div class="mc-split">
             <span class="eyebrow">ventana cargada</span>
             <div class="bar-track">
-              <div class="bar-fill" style="width:${Math.min(100, Math.round(loaded * 100 / (t.observations || 1)))}%;background:#a78bfa"></div>
+              <div class="bar-fill" data-live="win-fill" style="width:${Math.min(100, Math.round(loaded * 100 / (t.observations || 1)))}%;background:#a78bfa"></div>
             </div>
-            <span class="val">${loaded} / ${t.observations}</span>
+            <span class="val" data-live="win-val">${loaded} / ${t.observations}</span>
           </div>
         </div>
       </div>
 
       <div class="mc-tiles">
-        ${tile({ label: "memorias", num: t.observations, tone: "accent",
+        ${tile({ label: "memorias", num: t.observations, tone: "accent", live: "observations",
           caption: "observaciones activas en el motor",
-          strip: `<span class="strip">${byType.map(([type, n]) => `<i style="background:${typeColor(type)};flex-grow:${Math.max(n, .35)}"></i>`).join("") || `<i></i>`}</span>` })}
-        ${tile({ label: "sesiones", num: t.sessions, caption: "sesiones que escribieron memoria" })}
-        ${tile({ label: "proyectos", num: t.projects, caption: "proyectos con memoria" })}
-        ${tile({ label: "hoy · 24 h", num: a.d1, caption: "memorias creadas en las últimas 24 h",
+          strip: `<span class="strip" data-live="tile-strip">${byType.map(([type, n]) => `<i style="background:${typeColor(type)};flex-grow:${Math.max(n, .35)}"></i>`).join("") || `<i></i>`}</span>` })}
+        ${tile({ label: "sesiones", num: t.sessions, live: "sessions", caption: "sesiones que escribieron memoria" })}
+        ${tile({ label: "proyectos", num: t.projects, live: "projects", caption: "proyectos con memoria" })}
+        ${tile({ label: "hoy · 24 h", num: a.d1, live: "d1", caption: "memorias creadas en las últimas 24 h",
           bar: Math.min(100, Math.round(pct(a.d1, t.observations || 1))) })}
-        ${tile({ label: "semana · 7 d", num: a.d7, tone: "violet", caption: "memorias creadas en los últimos 7 días",
+        ${tile({ label: "semana · 7 d", num: a.d7, tone: "violet", live: "d7", caption: "memorias creadas en los últimos 7 días",
           bar: Math.min(100, Math.round(pct(a.d7, t.observations || 1))) })}
-        ${tile({ label: "mes · 30 d", num: a.d30, tone: "violet", caption: "memorias creadas en los últimos 30 días",
+        ${tile({ label: "mes · 30 d", num: a.d30, tone: "violet", live: "d30", caption: "memorias creadas en los últimos 30 días",
           bar: Math.min(100, Math.round(pct(a.d30, t.observations || 1))) })}
       </div>`;
 
@@ -939,7 +987,10 @@ function wireRadial(root) {
    a ser visible se sondea la salud de inmediato, sin esperar al siguiente tick. */
 document.addEventListener("visibilitychange", () => {
   document.body.dataset.hidden = document.hidden ? "1" : "";
-  if (!document.hidden) pollHealth();
+  if (!document.hidden) {
+    pollHealth();
+    restartBeaconLoop();
+  }
 });
 
 /* --- Memories ------------------------------------------------------------------ */
@@ -2025,6 +2076,7 @@ $("#project-select").addEventListener("change", (e) => {
 $("#refresh-btn").addEventListener("click", () => {
   state.obsIndex = null;
   loadStatus();
+  restartBeaconLoop();
   route();
 });
 
@@ -2044,8 +2096,10 @@ function setPulses(html) {
 }
 
 function setTicker(pairs) {
+  /* El tercer elemento del par es el gancho opcional data-live del valor:
+     el overview lo pasa para que el parche en vivo actualice la cifra. */
   $("#ticker").innerHTML = pairs
-    .map(([k, v]) => `<span>${esc(k)} <b>${esc(String(v))}</b></span>`).join("") +
+    .map(([k, v, hook]) => `<span>${esc(k)} <b${hook ? ` data-live="${esc(hook)}"` : ""}>${esc(String(v))}</b></span>`).join("") +
     `<span class="sep"></span><span>engram · <b>local</b></span>`;
 }
 
@@ -2098,6 +2152,273 @@ function startHealthPolling() {
   healthPollTimer = setInterval(pollHealth, HEALTH_POLL_MS);
 }
 
+/* --- latido del store: GET /api/beacon ----------------------------------------- */
+
+/* El backend expone la revisión del store; cuando cambia, el overview se
+   refresca en sitio: parcheo nodo a nodo con los ganchos data-live, sin
+   re-render ni parpadeo. Si el usuario no puede ser interrumpido (drawer,
+   modal, foco en un campo del overview) o está en otra vista, el cambio se
+   acumula en una píldora silenciosa de #pulses que aplica al hacer clic.
+   Nada de toasts para lo rutinario; tres fallos seguidos apagan el loop y
+   dejan la píldora del motor en estado down. */
+const BEACON_POLL_MS = 4000;
+const BEACON_MAX_FAILURES = 3;
+let beaconTimer = null;
+let beaconRev = null;        /* opaco: solo se compara como cadena */
+let beaconFailures = 0;
+let beaconStopped = false;
+let beaconBusy = false;
+let livePending = 0;
+
+/* El parche en vivo solo procede sin molestar al usuario; si algo de esto
+   aplica, el latido se limita a acumular el contador de la píldora. */
+function canPatchLive() {
+  if (state.currentView !== "overview") return false;
+  if (!$("#drawer").hidden) return false;
+  if (!$("#modal-backdrop").hidden) return false;
+  if (closeDestructiveModal) return false;
+  const ae = document.activeElement;
+  if (ae && $("#view").contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return false;
+  return true;
+}
+
+/* Mapa hook → nodo de todos los data-live presentes (vista y ticker). */
+function liveNodes(root = document) {
+  const map = {};
+  $$("[data-live]", root).forEach((el) => { map[el.dataset.live] = el; });
+  return map;
+}
+
+function patchText(live, hook, value) {
+  const el = live[hook];
+  const v = String(value);
+  if (el && el.textContent !== v) el.textContent = v;
+}
+
+function bumpLivePending() {
+  livePending += 1;
+  let pill = $("#live-pending");
+  if (!pill) {
+    pill = document.createElement("button");
+    pill.id = "live-pending";
+    pill.type = "button";
+    pill.className = "pill";
+    pill.title = "Aplicar al overview los cambios pendientes del store";
+    pill.onclick = () => applyLiveOverview(true);
+    $("#pulses").appendChild(pill);
+  }
+  pill.textContent = `${livePending} nuevas`;
+}
+
+function clearLivePending() {
+  livePending = 0;
+  const pill = $("#live-pending");
+  if (pill) pill.remove();
+}
+
+/* Anillos: misma matemática que el render (radialGeometry + ringArcLength).
+   Si el conjunto de tipos cambió, rebuild acotado al grupo de anillos. */
+function patchRadialRings(byType, total, live) {
+  const group = live["rings-group"];
+  if (!group) return false;
+  const { ringsData } = radialRingsData(byType);
+  const arcs = {};
+  $$(".mc-ring-arc", group).forEach((el) => { arcs[el.dataset.ring] = el; });
+  const existing = Object.keys(arcs);
+  const fresh = ringsData.map(([t]) => t);
+  const changed = existing.length !== fresh.length || fresh.some((t) => !(t in arcs));
+  if (changed) {
+    group.innerHTML = radialRingCircles(ringsData, total);
+    return true;
+  }
+  const { rOut, GAP_DEG, step } = radialGeometry(ringsData);
+  ringsData.forEach(([type, count], i) => {
+    const el = arcs[type];
+    if (!el) return;
+    const r = rOut - step * (i + 0.5);
+    const { circumference: C, arc } = ringArcLength(r, GAP_DEG, count, total);
+    el.setAttribute("stroke-dasharray", `${arc} ${C - arc}`);
+    el.setAttribute("aria-label",
+      `${type}: ${count} memorias, ${fmtPct(count, total)}. Activa para abrir Memories filtrado por este tipo.`);
+    const title = el.querySelector("title");
+    if (title) title.textContent = `${type}: ${count} (${fmtPct(count, total)})`;
+  });
+  return false;
+}
+
+/* Barras: mismo markup y matemática que barRowsMarkup; rebuild acotado a la
+   lista cuando el conjunto de tipos cambia. */
+function patchBars(byType, loaded, live) {
+  const box = live["bars-list"];
+  if (!box) return false;
+  const rows = {};
+  $$(".bar-row", box).forEach((el) => { rows[el.dataset.bar] = el; });
+  const existing = Object.keys(rows);
+  const fresh = byType.map(([t]) => t);
+  const changed = existing.length !== fresh.length || fresh.some((t) => !(t in rows));
+  if (changed) {
+    box.innerHTML = barRowsMarkup(byType, loaded)
+      || `<div class="caption muted">Sin observaciones activas en el ámbito.</div>`;
+    return true;
+  }
+  byType.forEach(([type, n]) => {
+    const row = rows[type];
+    if (!row) return;
+    const fill = row.querySelector(".bar-fill");
+    if (fill) fill.style.width = `${Math.max(2, Math.round(n * 100 / (loaded || 1)))}%`;
+    const count = row.querySelector(".mono");
+    if (count) count.textContent = `${n} · ${fmtPct(n, loaded)}`;
+    row.setAttribute("aria-label",
+      `${type}: ${n} memorias, ${fmtPct(n, loaded)}. Activa para abrir Memories filtrado por este tipo.`);
+  });
+  return false;
+}
+
+/* Sparkline: la d del path con la misma matemática de sparkPathData. Si al
+   render inicial no había serie y ahora sí, rebuild acotado del bloque. */
+function patchSpark(byDay, d30, live) {
+  const sp = sparkPathData(byDay);
+  const path = live["spark"];
+  if (path && sp) {
+    if (path.getAttribute("d") !== sp.d) path.setAttribute("d", sp.d);
+  } else if (path && !sp) {
+    /* La serie desapareció: el render inicial no habría dibujado sparkline. */
+    const svg = path.closest("svg.spark");
+    if (svg) svg.remove();
+  } else if (!path && sp && live["spark-split"]) {
+    live["spark-split"].innerHTML =
+      `<span class="eyebrow">actividad diaria · 30 d</span>${renderSpark(byDay)}` +
+      `<span class="val" data-live="spark-val">${d30} en 30 d</span>`;
+  }
+  patchText(live, "spark-val", `${d30} en 30 d`);
+}
+
+/* Refresco del overview en sitio: estado global y setters puntuales sobre los
+   nodos con gancho. Ningún view.innerHTML ni location.reload: los nodos sin
+   cambios no se tocan. `force` solo lo usa el clic de la píldora pendiente. */
+async function applyLiveOverview(force = false) {
+  if (!force && !canPatchLive()) { bumpLivePending(); return; }
+  try {
+    const data = await api("/api/overview");
+    state.health = data.health;
+    state.stats = data.stats;
+    state.projects = data.projects;
+    state.loadedAt = data.loaded_at;
+    setApiStatus(data.health.status === "ok", data.health.version, state.compatible);
+
+    const t = data.totals;
+    const a = data.activity;
+    const loaded = data.observations_loaded || 0;
+    const byType = Object.entries(a.by_type || {}).sort((x, y) => y[1] - x[1]);
+    const live = liveNodes();
+    if (!live["core-num"]) { bumpLivePending(); return; }   /* vista aún cargando */
+
+    patchText(live, "core-num", loaded);
+    patchText(live, "core-sub", `${t.observations} activas en total${data.truncated ? " · ventana acotada" : ""}`);
+    patchText(live, "core-eyebrow",
+      `distribución por tipo · ${byType.length} tipo${byType.length === 1 ? "" : "s"} · ${loaded} cargadas`);
+
+    patchText(live, "rhythm-num", fmtPct(a.d7, t.observations).replace("%", ""));
+    const cap = live["rhythm-caption"];
+    if (cap) {
+      const bs = cap.querySelectorAll("b");
+      if (bs.length === 2) { bs[0].textContent = a.d7; bs[1].textContent = t.observations; }
+      else cap.innerHTML = `<b>${a.d7}</b> de <b>${t.observations}</b> memorias se crearon en los últimos 7 días`;
+    }
+
+    const ringsRewired = patchRadialRings(a.by_type, loaded, live);
+    const barsRewired = patchBars(byType, loaded, live);
+    patchSpark(a.by_day, a.d30, live);
+
+    const { all } = radialRingsData(a.by_type);
+    const svg = live["radial-svg"];
+    if (svg) {
+      const breakdown = all.map(([tp, c]) => `${tp} ${c}`).join(", ") || "sin tipos";
+      const label = `Distribución por tipo: ${loaded} observaciones en ${all.length} tipos. ${breakdown}.`;
+      if (svg.getAttribute("aria-label") !== label) svg.setAttribute("aria-label", label);
+    }
+
+    const wf = live["win-fill"];
+    if (wf) wf.style.width = `${Math.min(100, Math.round(loaded * 100 / (t.observations || 1)))}%`;
+    patchText(live, "win-val", `${loaded} / ${t.observations}`);
+
+    patchText(live, "tile-observations", t.observations);
+    patchText(live, "tile-sessions", t.sessions);
+    patchText(live, "tile-projects", t.projects);
+    patchText(live, "tile-d1", a.d1);
+    patchText(live, "tile-d7", a.d7);
+    patchText(live, "tile-d30", a.d30);
+    [["d1", a.d1], ["d7", a.d7], ["d30", a.d30]].forEach(([k, v]) => {
+      const el = live[`tile-bar-${k}`];
+      if (el) el.style.width = `${Math.min(100, Math.round(pct(v, t.observations || 1)))}%`;
+    });
+    const strip = live["tile-strip"];
+    if (strip) {
+      const html = byType.map(([type, n]) =>
+        `<i style="background:${typeColor(type)};flex-grow:${Math.max(n, .35)}"></i>`).join("") || `<i></i>`;
+      if (strip.innerHTML !== html) strip.innerHTML = html;
+    }
+
+    patchText(live, "ticker-observaciones", t.observations);
+    patchText(live, "ticker-sesiones", t.sessions);
+    patchText(live, "ticker-proyectos", t.projects);
+    patchText(live, "ticker-tipos", byType.length);
+    patchText(live, "ticker-cargadas", loaded);
+    patchText(live, "ticker-cargado", rel(data.loaded_at));
+
+    if (ringsRewired || barsRewired) wireRadial($("#view"));
+    clearLivePending();
+  } catch {
+    bumpLivePending();
+  }
+}
+
+async function pollBeacon() {
+  if (document.hidden || beaconBusy || beaconStopped) return;
+  beaconBusy = true;
+  try {
+    const data = await api("/api/beacon");
+    beaconFailures = 0;
+    const rev = String(data.rev);
+    if (beaconRev === null) {
+      beaconRev = rev;                    /* primer latido: solo se guarda */
+    } else if (rev !== beaconRev) {
+      beaconRev = rev;
+      state.obsIndex = null;              /* el store cambió: índice stale */
+      if (canPatchLive()) applyLiveOverview(true);
+      else bumpLivePending();
+    }
+  } catch {
+    beaconFailures += 1;
+    if (beaconFailures >= BEACON_MAX_FAILURES) stopBeaconLoop(true);
+  } finally {
+    beaconBusy = false;
+  }
+}
+
+function stopBeaconLoop(down = false) {
+  if (beaconTimer) { clearInterval(beaconTimer); beaconTimer = null; }
+  if (down) {
+    beaconStopped = true;
+    setApiStatus(false);
+  }
+}
+
+function startBeaconLoop() {
+  if (beaconTimer || beaconStopped) return;
+  beaconTimer = setInterval(pollBeacon, BEACON_POLL_MS);
+}
+
+/* Vuelta de visibilidad o refresco manual: el loop se reanuda limpio, incluso
+   después de apagarse por fallos, y sondea de inmediato. */
+function restartBeaconLoop() {
+  beaconFailures = 0;
+  beaconStopped = false;
+  if (beaconTimer) { clearInterval(beaconTimer); beaconTimer = null; }
+  startBeaconLoop();
+  pollBeacon();
+}
+
 /* --- teclado ---------------------------------------------------------------------------------- */
 
 document.addEventListener("keydown", (e) => {
@@ -2146,6 +2467,7 @@ async function route() {
   const isObs = name === "memories" && parts[1] === "obs" && parts[2];
   const isSession = name === "sessions" && parts[1];
   const view = isSession ? "session-detail" : (TITLES[name] ? name : "overview");
+  state.currentView = view;
   if (!isObs && !$("#drawer").hidden) closeDrawer();
 
   document.querySelectorAll("#nav a").forEach((a) => {
@@ -2178,4 +2500,5 @@ window.addEventListener("hashchange", route);
   await route();
   fillProjectSelect().then(syncProjectSelect);
   startHealthPolling();
+  startBeaconLoop();
 })();

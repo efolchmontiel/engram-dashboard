@@ -21,15 +21,6 @@ Interfaz web local para consultar y gestionar la memoria de [Engram](https://git
 
 El dashboard no crea observaciones, sesiones ni proyectos, y no juzga relaciones ni cambia estados de revisión: eso se hace con las herramientas de Engram.
 
-## Navegación
-
-El menú vive en una barra lateral fija de 222 px: marca, buscador, las siete vistas con su conteo, los proyectos con memoria y el estado de la API al pie. La barra superior solo lleva el título, las ventanas de tiempo y el botón de recarga.
-
-| Atajo | Acción |
-| --- | --- |
-| `Ctrl`/`⌘` + `K` | Enfocar el buscador |
-| `Esc` | Cerrar el detalle o el diálogo |
-
 ## Paginado
 
 | Vista | Cómo pagina |
@@ -39,6 +30,20 @@ El menú vive en una barra lateral fija de 222 px: marca, buscador, las siete vi
 | Prompts | **Cliente**: igual, hasta 500 prompts recientes |
 
 El motor **ignora `offset`** en `/sessions/recent` y `/prompts/recent`: pedir `offset=3` devuelve los mismos primeros registros. Por eso esas dos vistas paginan sobre lo cargado y lo dicen en pantalla (`1–50 de 500 sesiones cargadas`), en lugar de simular un recorrido que no existe. Para paginar de verdad ahí hace falta soporte del motor.
+
+## En vivo
+
+El dashboard se actualiza solo mientras el store cambia, sin recargar la página ni parpadear.
+
+Cada 4 segundos el navegador consulta `GET /api/beacon`, que devuelve una huella del store: un `sha1` corto sobre `mtime` y tamaño de `engram.db` **y** `engram.db-wal`. Los dos archivos importan, porque con WAL activo hay escrituras que mueven el `-wal` sin tocar el principal. El endpoint cuesta un `stat`, no una consulta al motor: el estado de salud se cachea 10 segundos.
+
+Si la huella cambió, recién ahí se pide `/api/overview` —el endpoint caro, hasta 20 000 observaciones— y la vista se **parchea nodo por nodo**: el número del centro, el `stroke-dasharray` de cada anillo, el ancho de cada barra, el total de cada tile. Nada de `location.reload()` ni de reemplazar el bloque entero: los nodos que no cambiaron siguen siendo los mismos objetos del DOM, así que no hay repintado ni salto.
+
+Cuando el parcheo no corresponde —estás en otra vista, hay un drawer o un diálogo abierto, o el foco está en un campo— el cambio no se aplica y aparece un pill `N nuevas` en la barra superior para aplicarlo cuando quieras.
+
+Detalles de comportamiento: con la pestaña oculta no se consulta nada; un botón de recarga o volver a la pestaña rearranca el ciclo; después de tres fallas consecutivas de `/api/beacon` el ciclo se detiene (ver Limitaciones).
+
+Esto es **polling**, no push: el motor no expone eventos (`/events`, `/stream`, `/watch` responden 404), así que no hay forma de que avise. La latencia máxima es la del intervalo, 4 segundos.
 
 ## Borrado
 
@@ -106,6 +111,7 @@ Loopback, sin autenticación ni TLS: exponer otra interfaz, un proxy o un túnel
 - `doctor` depende del proyecto seleccionado; puede reportar un proyecto desconocido.
 - Un proyecto cuyo nombre empiece con guion puede hacer fallar la cascada: el CLI lo lee como opción y el dashboard responde `502` sin declarar éxito.
 - La suite espera el binario del motor: los tests de integración arrancan `engram serve`, así que sin binario fallan antes de probar nada.
+- En vivo: si `/api/beacon` falla tres veces seguidas (un reinicio del dashboard, un corte momentáneo), el ciclo se detiene y solo rearranca al recargar o al volver a la pestaña. Además, como la huella incluye el `-wal`, un checkpoint de SQLite que no cambia ningún dato también la mueve, y eso provoca un refresco de más.
 
 ## Arranque automático y acceso de escritorio (opcional)
 
