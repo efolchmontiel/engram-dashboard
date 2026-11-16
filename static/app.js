@@ -605,6 +605,77 @@ function miniChartRows(aria, entries) {
   return miniChartSvg(aria, inner, data.length * rowH);
 }
 
+/* Dona de composición: una sola forma con partes. Se usa donde una categoría
+   domina y comparar largos de barras no dice nada. */
+const DONUT_HUES = ["#34d399", "#fbbf24", "#ea1889", "#a78bfa", "#38bdf8", "#f472b6"];
+
+function donutChart(aria, entries, unit = "") {
+  const data = entries.map((e, i) => ({
+    label: String(e.label), value: Number(e.value) || 0, color: e.color || DONUT_HUES[i % DONUT_HUES.length],
+  })).filter((e) => e.value > 0);
+  const total = data.reduce((a, e) => a + e.value, 0);
+  if (!total) return "";
+  const C = 105, R = 82, r = 56, GAP = 2.6;
+  const pt = (rad, ang) => [C + rad * Math.cos((ang * Math.PI) / 180), C + rad * Math.sin((ang * Math.PI) / 180)];
+  let a0 = -90;
+  const arcs = data.map((e) => {
+    const span = (e.value / total) * 360;
+    const a1 = a0 + Math.max(span - GAP, 0.6);
+    const [x0, y0] = pt(R, a0), [x1, y1] = pt(R, a1), [x2, y2] = pt(r, a1), [x3, y3] = pt(r, a0);
+    const large = a1 - a0 > 180 ? 1 : 0;
+    a0 += span;
+    return `<path d="M${x0.toFixed(2)} ${y0.toFixed(2)}A${R} ${R} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}L${x2.toFixed(2)} ${y2.toFixed(2)}A${r} ${r} 0 ${large} 0 ${x3.toFixed(2)} ${y3.toFixed(2)}Z" fill="${e.color}" fill-opacity=".9"><title>${esc(e.label)}: ${e.value}</title></path>`;
+  }).join("");
+  const top = data.reduce((m, e) => (e.value > m.value ? e : m), data[0]);
+  const legend = data.map((e) => `<div class="dl-row"><i style="background:${e.color}"></i><span>${esc(e.label)}</span>
+    <b>${Number(e.value).toLocaleString("es-ES")}</b><em>${((e.value / total) * 100).toFixed(1)}%</em></div>`).join("");
+  return `<div class="donut">
+    <div class="donut-svg">
+      <svg viewBox="0 0 210 210" role="img" aria-label="${esc(aria)}">${arcs}</svg>
+      <div class="donut-hole"><div class="n">${Number(top.value).toLocaleString("es-ES")}</div>
+        <div class="u">${esc(top.label)}${unit ? ` ${esc(unit)}` : ""}</div></div>
+    </div>
+    <div class="donut-legend">${legend}</div>
+  </div>`;
+}
+
+/* Mapa de calor: densidad por día en una grilla de semanas × 7 días. */
+const HEAT_WEEKS = 26;
+
+function sessionsHeatmap(sessions, aria) {
+  const counts = {};
+  for (const s of sessions) {
+    const key = String(s.started_at || "").slice(0, 10);
+    if (key) counts[key] = (counts[key] || 0) + 1;
+  }
+  const DAY = 86400000;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const end = today.getTime();
+  const dow = (today.getDay() + 6) % 7;                  // 0 = lunes
+  const start = end - (dow + (HEAT_WEEKS - 1) * 7) * DAY;
+  const max = Math.max(1, ...Object.values(counts));
+  const weeks = [];
+  for (let w = 0; w < HEAT_WEEKS; w++) {
+    const cells = [];
+    for (let d = 0; d < 7; d++) {
+      const ts = start + (w * 7 + d) * DAY;
+      if (ts > end) { cells.push(`<i class="cell off"></i>`); continue; }
+      const key = new Date(ts).toISOString().slice(0, 10);
+      const v = counts[key] || 0;
+      const lvl = v === 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((v / max) * 4)));
+      const dd = key.slice(8, 10), mm = key.slice(5, 7);
+      cells.push(`<i class="cell${lvl ? ` l${lvl}` : ""}" title="${dd}/${mm}: ${v} sesion${v === 1 ? "" : "es"}"></i>`);
+    }
+    weeks.push(`<div class="heat-wk">${cells.join("")}</div>`);
+  }
+  return `<div class="heat" role="img" aria-label="${esc(aria)}">
+    <div class="heat-days"><span></span><span>lun</span><span></span><span>mié</span><span></span><span>vie</span><span></span></div>
+    <div class="heat-weeks">${weeks.join("")}</div>
+    <div class="heat-legend"><span>menos</span><i class="cell"></i><i class="cell l1"></i><i class="cell l2"></i><i class="cell l3"></i><i class="cell l4"></i><span>más</span></div>
+  </div>`;
+}
+
 /* --- Overview: la rueda donut ------------------------------------------------ */
 
 /* Un mismo color por tipo en la rueda; el detalle por tipo vive en Memories,
@@ -1159,9 +1230,9 @@ async function viewSessions(view) {
       state.sPage = Math.min(Math.max(state.sPage, 1), pages);
       const slice = sessions.slice((state.sPage - 1) * state.sSize, state.sPage * state.sSize);
       view.innerHTML = `
-        ${miniChartColumns(
-          `Sesiones por día en los últimos ${SESSIONS_CHART_DAYS} días, según las ${sessions.length} sesiones cargadas de ${scopeLabel()}.`,
-          sessionsByDay(sessions))}
+        ${sessionsHeatmap(
+          sessions,
+          `Sesiones por día en las últimas ${HEAT_WEEKS} semanas, según las ${sessions.length} sesiones cargadas de ${scopeLabel()}.`)}
         <div class="table-wrap">
           <table>
             <thead><tr><th>Sesión</th>
@@ -1335,9 +1406,6 @@ async function viewPrompts(view) {
       state.pPage = Math.min(Math.max(state.pPage, 1), pages);
       const slice = prompts.slice((state.pPage - 1) * state.pSize, state.pPage * state.pSize);
       view.innerHTML = `
-        ${miniChartRows(
-          `Prompts por proyecto, según los ${prompts.length} prompts cargados de ${scopeLabel()}.`,
-          promptsByProject(prompts))}
         <div class="table-wrap">
           <table>
             <thead><tr><th style="width:80px">ID</th>
@@ -1744,9 +1812,9 @@ async function viewHealth(view) {
         </div>
       </div>
 
-      ${miniChartRows(
-        `Mezcla de juicio y revisión de memoria en ${scopeLabel()}: relaciones pendientes, juzgadas y huérfanas, más las memorias con revisión vencida.`,
-        healthChartEntries(stats, review))}
+      ${donutChart(
+        `Juicio de relaciones de ${scopeLabel()}: pendientes, juzgadas y sin juicio, más las memorias con revisión vencida.`,
+        healthChartEntries(stats, review), "")}
 
       ${review && review.count ? `
         <div class="card" style="margin-bottom:18px">
