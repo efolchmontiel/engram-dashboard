@@ -141,7 +141,9 @@ const state = {
   q: "", type: "", session: "", order: "updated", limit: 1000,
   projects: [], health: null, stats: null, loadedAt: null,
   compatible: true,
-  cStatus: "", cRelation: "", cOffset: 0,
+  cStatus: "", cRelation: "", cOffset: 0, cLimit: 100,
+  rOffset: 0, rLimit: 100,
+  pPage: 1, pSize: 50, sPage: 1, sSize: 50,
   obsIndex: null, focusSearch: false,
 };
 
@@ -481,26 +483,226 @@ function windowNotice(shown, truncated, total) {
   </div>`;
 }
 
-/* --- panel de control: color por tipo, radial, sparkline, carriles ------------- */
+/* --- paginación ------------------------------------------------------------- */
 
-/* Un mismo color por tipo en el radial, las barras y las etiquetas. */
+const PAGE_SIZES = [25, 50, 100];
+
+/* Barra .pager: ‹ › deshabilitados en los extremos, línea de información y
+   tamaño de página. No se emite cuando todo cabe en una sola página. */
+function pagerBar({ label, page, pages, info, size, name = "" }) {
+  if (pages <= 1) return "";
+  return `
+    <div class="pager" role="navigation" aria-label="${esc(label)}"${name ? ` data-pager="${esc(name)}"` : ""}>
+      <button class="pager-btn" data-pg="prev" aria-label="Página anterior"${page <= 1 ? " disabled" : ""}>‹</button>
+      <button class="pager-btn" data-pg="next" aria-label="Página siguiente"${page >= pages ? " disabled" : ""}>›</button>
+      <span class="pager-info">${info}</span>
+      <select class="pager-size" data-pg-size aria-label="Filas por página">
+        ${PAGE_SIZES.map((n) => `<option value="${n}"${n === size ? " selected" : ""}>${n} / pág.</option>`).join("")}
+      </select>
+    </div>`;
+}
+
+function wirePager(root, { onPrev, onNext, onSize, name = "" }) {
+  const bar = name ? $(`.pager[data-pager="${name}"]`, root) : $(".pager", root);
+  if (!bar) return;
+  const prev = $('[data-pg="prev"]', bar);
+  const next = $('[data-pg="next"]', bar);
+  const size = $("[data-pg-size]", bar);
+  if (prev) prev.onclick = onPrev;
+  if (next) next.onclick = onNext;
+  if (size) size.onchange = (e) => onSize(Number(e.target.value));
+}
+
+/* Info del pager cliente: rango visible sobre lo cargado y, cuando la carga no
+   alcanza al total del ámbito, se dice de forma explícita en la misma línea. */
+function pagerInfoClient(page, size, loaded, total, unit) {
+  const from = (page - 1) * size + 1;
+  const to = Math.min(page * size, loaded);
+  let info = `${from}–${to} de ${loaded} ${unit} cargadas`;
+  if (total != null && loaded < total) info += ` · ${total} en total · el paginador solo recorre lo cargado`;
+  else if (total != null) info += ` · ${total} en total`;
+  return esc(info);
+}
+
+/* Info del pager de servidor: la API sí pagina, el rango es real. */
+function pagerInfoServer(page, size, total, unit) {
+  const from = total ? (page - 1) * size + 1 : 0;
+  const to = Math.min(page * size, total);
+  return esc(`${from}–${to} de ${total} ${unit}`);
+}
+
+/* Total del ámbito según los contadores por proyecto que el shell ya cargó
+   (/api/projects alimenta el selector y state.projects). Devuelve null cuando
+   aún no hay datos: el pager entonces solo informa lo cargado. */
+function scopeTotalFor(kind) {
+  if (state.project) {
+    const p = state.projects.find((x) => x.name === state.project);
+    return p ? (p[kind] || 0) : null;
+  }
+  return state.projects.length
+    ? state.projects.reduce((acc, p) => acc + (p[kind] || 0), 0)
+    : null;
+}
+
+/* --- .mini-chart (~64 px) sobre la tabla -------------------------------------- */
+
+/* Sin viewBox: x/width en % se resuelven contra el ancho real del contenedor y
+   el alto queda en px, así el texto .mc-axis nunca se deforma. rx=2 redondea
+   las cuatro esquinas, así que un segundo rect cuadra la base y el radio queda
+   solo en el borde superior de la barra. */
+function miniChartSvg(aria, inner, height) {
+  return `<div class="mini-chart">
+    <svg role="img" aria-label="${esc(aria)}"${height ? ` height="${height}"` : ""}>${inner}</svg>
+  </div>`;
+}
+
+function mcBar(x, y, w, h, color, title) {
+  const r = Math.min(2, h);
+  const base = h > r
+    ? `<rect class="mc-bar" x="${x}" y="${(y + h - r).toFixed(2)}" width="${w}" height="${r.toFixed(2)}" style="--c:${color}"></rect>`
+    : "";
+  return `<rect class="mc-bar" x="${x}" y="${y.toFixed(2)}" width="${w}" height="${h.toFixed(2)}" rx="${r.toFixed(2)}" style="--c:${color}"><title>${esc(title)}</title></rect>${base}`;
+}
+
+/* Columnas verticales: una entrada por categoría; .axis rota el rótulo para no
+   saturar el eje ("day labels every few columns"). */
+function miniChartColumns(aria, entries) {
+  const n = entries.length;
+  if (!n || !entries.some((e) => e.value > 0)) return "";
+  const max = Math.max(...entries.map((e) => e.value));
+  const col = 100 / n;
+  const gap = Math.min(col * 0.18, 1.4);
+  const baseY = 48, hMax = 42;
+  const inner = entries.map((e, i) => {
+    const x = `${(i * col + gap).toFixed(3)}%`;
+    const w = `${(col - gap * 2).toFixed(3)}%`;
+    const h = e.value ? Math.max((e.value / max) * hMax, 2) : 0;
+    const bar = e.value ? mcBar(x, baseY - h, w, h, e.color || ACCENT, `${e.label}: ${e.value}`) : "";
+    const axis = e.axis
+      ? `<text class="mc-axis" x="${((i + 0.5) * col).toFixed(3)}%" y="61" text-anchor="middle">${esc(e.axis)}</text>`
+      : "";
+    return bar + axis;
+  }).join("");
+  return miniChartSvg(aria, inner);
+}
+
+/* Barras horizontales: nombre del proyecto en .mc-axis a la izquierda, barra
+   proporcional a la derecha; top 6 para que quepan en los 64 px. */
+function miniChartRows(aria, entries) {
+  const data = entries.filter((e) => e.value > 0)
+    .sort((a, b) => b.value - a.value).slice(0, 6);
+  if (!data.length) return "";
+  const max = data[0].value;
+  const rowH = 18;
+  const barH = Math.min(rowH - 6, 12);
+  const inner = data.map((e, i) => {
+    const y = i * rowH + (rowH - barH) / 2;
+    const name = String(e.label);
+    const axisText = name.length > 12 ? `${name.slice(0, 11)}…` : name;
+    return `<text class="mc-axis" x="0" y="${(y + barH / 2 + 3).toFixed(2)}">${esc(axisText)}</text>` +
+      mcBar("14%", y, `${((e.value / max) * 82).toFixed(3)}%`, barH, e.color || ACCENT, `${name}: ${e.value}`);
+  }).join("");
+  return miniChartSvg(aria, inner, data.length * rowH);
+}
+
+/* Dona de composición: una sola forma con partes. Se usa donde una categoría
+   domina y comparar largos de barras no dice nada. */
+const DONUT_HUES = ["#34d399", "#fbbf24", "#ea1889", "#a78bfa", "#38bdf8", "#f472b6"];
+
+function donutChart(aria, entries, unit = "") {
+  const data = entries.map((e, i) => ({
+    label: String(e.label), value: Number(e.value) || 0, color: e.color || DONUT_HUES[i % DONUT_HUES.length],
+  })).filter((e) => e.value > 0);
+  const total = data.reduce((a, e) => a + e.value, 0);
+  if (!total) return "";
+  const C = 105, R = 82, r = 56, GAP = 2.6;
+  const pt = (rad, ang) => [C + rad * Math.cos((ang * Math.PI) / 180), C + rad * Math.sin((ang * Math.PI) / 180)];
+  let a0 = -90;
+  const arcs = data.map((e) => {
+    const span = (e.value / total) * 360;
+    const a1 = a0 + Math.max(span - GAP, 0.6);
+    const [x0, y0] = pt(R, a0), [x1, y1] = pt(R, a1), [x2, y2] = pt(r, a1), [x3, y3] = pt(r, a0);
+    const large = a1 - a0 > 180 ? 1 : 0;
+    a0 += span;
+    return `<path d="M${x0.toFixed(2)} ${y0.toFixed(2)}A${R} ${R} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}L${x2.toFixed(2)} ${y2.toFixed(2)}A${r} ${r} 0 ${large} 0 ${x3.toFixed(2)} ${y3.toFixed(2)}Z" fill="${e.color}" fill-opacity=".9"><title>${esc(e.label)}: ${e.value}</title></path>`;
+  }).join("");
+  const top = data.reduce((m, e) => (e.value > m.value ? e : m), data[0]);
+  const legend = data.map((e) => `<div class="dl-row"><i style="background:${e.color}"></i><span>${esc(e.label)}</span>
+    <b>${Number(e.value).toLocaleString("es-ES")}</b><em>${((e.value / total) * 100).toFixed(1)}%</em></div>`).join("");
+  return `<div class="donut">
+    <div class="donut-svg">
+      <svg viewBox="0 0 210 210" role="img" aria-label="${esc(aria)}">${arcs}</svg>
+      <div class="donut-hole"><div class="n">${Number(top.value).toLocaleString("es-ES")}</div>
+        <div class="u">${esc(top.label)}${unit ? ` ${esc(unit)}` : ""}</div></div>
+    </div>
+    <div class="donut-legend">${legend}</div>
+  </div>`;
+}
+
+/* Mapa de calor: densidad por día en una grilla de semanas × 7 días. */
+const HEAT_WEEKS = 26;
+
+function sessionsHeatmap(sessions, aria) {
+  const counts = {};
+  for (const s of sessions) {
+    const key = String(s.started_at || "").slice(0, 10);
+    if (key) counts[key] = (counts[key] || 0) + 1;
+  }
+  const DAY = 86400000;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const end = today.getTime();
+  const dow = (today.getDay() + 6) % 7;                  // 0 = lunes
+  const start = end - (dow + (HEAT_WEEKS - 1) * 7) * DAY;
+  const max = Math.max(1, ...Object.values(counts));
+  const weeks = [];
+  for (let w = 0; w < HEAT_WEEKS; w++) {
+    const cells = [];
+    for (let d = 0; d < 7; d++) {
+      const ts = start + (w * 7 + d) * DAY;
+      if (ts > end) { cells.push(`<i class="cell off"></i>`); continue; }
+      const key = new Date(ts).toISOString().slice(0, 10);
+      const v = counts[key] || 0;
+      const lvl = v === 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((v / max) * 4)));
+      const dd = key.slice(8, 10), mm = key.slice(5, 7);
+      cells.push(`<i class="cell${lvl ? ` l${lvl}` : ""}" title="${dd}/${mm}: ${v} sesion${v === 1 ? "" : "es"}"></i>`);
+    }
+    weeks.push(`<div class="heat-wk">${cells.join("")}</div>`);
+  }
+  return `<div class="heat" role="img" aria-label="${esc(aria)}">
+    <div class="heat-days"><span></span><span>lun</span><span></span><span>mié</span><span></span><span>vie</span><span></span></div>
+    <div class="heat-weeks">${weeks.join("")}</div>
+    <div class="heat-legend"><span>menos</span><i class="cell"></i><i class="cell l1"></i><i class="cell l2"></i><i class="cell l3"></i><i class="cell l4"></i><span>más</span></div>
+  </div>`;
+}
+
+/* --- Overview: la rueda donut ------------------------------------------------ */
+
+/* Un mismo color por tipo en la rueda; el detalle por tipo vive en Memories,
+   donde se llega con un clic. Paleta fija del sistema; los tipos no
+   catalogados caen al gris de "otros". */
 const TYPE_HUE = {
-  decision: "#b4e7c7", architecture: "#ffb1dd", bugfix: "#ff718f", config: "#e0c27a",
-  discovery: "#f095c8", learning: "#b4e7c7", pattern: "#a9c7ee", preference: "#c4daf6",
-  session_summary: "#f2b86d", bug: "#f2b86d", error: "#ff718f", manual: "#a78e9b",
+  session_summary: "#ea1889", discovery: "#34d399", bugfix: "#f87171",
+  decision: "#a78bfa", config: "#38bdf8", architecture: "#fbbf24",
+  preference: "#f472b6", pattern: "#a3e635", manual: "#94a3b8", otros: "#52525b",
 };
-const typeColor = (t) => TYPE_HUE[t] || "#76616b";
+const typeColor = (t) => TYPE_HUE[t] || "#52525b";
+const ACCENT = "#ea1889";
 
 const pct = (n, d) => (d ? (n * 100) / d : 0);
 const fmtPct = (n, d) => (d ? `${pct(n, d).toFixed(1).replace(/\.0$/, "")}%` : "—");
 
 /* Anillos concéntricos: un anillo por tipo, arco proporcional a su cuota y hueco
-   a las 12 en punto para que la etiqueta del anillo quepa sin taparlo.
-   El número de anillos está acotado por la legibilidad de la etiqueta: los tipos
-   restantes se agrupan en un único anillo "otros", sin perder el desglose, que
-   sigue íntegro en la leyenda y en las barras. */
+   a las 12 en punto para que el barrido no tape el arranque del arco. El número
+   de anillos está acotado por la legibilidad: los tipos restantes se agrupan en
+   un único anillo "otros", sin perder el desglose, que vive en las barras del
+   panel derecho. */
 const RADIAL_MAX = 9;
 
+/* El radar: un anillo por tipo (los más pesados afuera), arco proporcional a
+   su cuota de las observaciones cargadas, con hueco a las 12 en punto. Sin
+   texto dentro del radial: cada anillo se identifica por su color, y las
+   barras del panel derecho (mismo tipo en data-bar) dan recuento y cuota. */
 function renderRadial(byType, total) {
   const all = Object.entries(byType || {}).sort((a, b) => b[1] - a[1]);
   const head = all.slice(0, RADIAL_MAX - (all.length > RADIAL_MAX ? 1 : 0));
@@ -514,20 +716,19 @@ function renderRadial(byType, total) {
   const step = n ? (rOut - rIn) / n : 0;
   const width = Math.max(4, Math.min(13, step * 0.62));
 
-  /* Sin texto dentro del radial: un hueco angular no puede alojar etiquetas
-     largas en anillos de radios distintos. Cada anillo se identifica por su
-     color, y la leyenda de debajo (mismo panel) da tipo y recuento. */
   const rings = ringsData.map(([type, count], i) => {
     const r = rOut - step * (i + 0.5);
     const C = 2 * Math.PI * r;
     const gap = (C * GAP_DEG) / 360;
     const arc = (C - gap) * (total ? count / total : 0);
-    const color = type === "otros" ? "#ffb1dd" : typeColor(type);
+    /* La paleta actual define "otros" en TYPE_HUE: sin color especial. */
+    const color = typeColor(type);
     return `
       <circle class="mc-ring-track" cx="${cx}" cy="${cy}" r="${r}" stroke-width="${width}"/>
       <circle class="mc-ring-arc" data-ring="${esc(type)}" cx="${cx}" cy="${cy}" r="${r}" stroke="${color}"
         style="--w:${width}" stroke-width="${width}" stroke-dasharray="${arc} ${C - arc}"
-        transform="rotate(${-90 + GAP_DEG / 2} ${cx} ${cy})"><title>${esc(type)}: ${count} (${fmtPct(count, total)})</title></circle>`;
+        transform="rotate(${-90 + GAP_DEG / 2} ${cx} ${cy})" tabindex="0" role="button"
+        aria-label="${esc(type)}: ${count} memorias, ${fmtPct(count, total)}. Activa para abrir Memories filtrado por este tipo."><title>${esc(type)}: ${count} (${fmtPct(count, total)})</title></circle>`;
   });
 
   if (!n) {
@@ -541,13 +742,13 @@ function renderRadial(byType, total) {
       aria-label="Distribución por tipo: ${total} observaciones en ${all.length} tipos. ${breakdown}.">
     <defs>
       <linearGradient id="mc-sweep-grad" x1="210" y1="10" x2="304.1" y2="33.4" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#f095c8" stop-opacity="0"/>
-        <stop offset=".72" stop-color="#f095c8" stop-opacity=".10"/>
-        <stop offset="1" stop-color="#ff76c3" stop-opacity=".34"/>
+        <stop offset="0" stop-color="${ACCENT}" stop-opacity="0"/>
+        <stop offset=".72" stop-color="${ACCENT}" stop-opacity=".05"/>
+        <stop offset="1" stop-color="${ACCENT}" stop-opacity=".14"/>
       </linearGradient>
       <radialGradient id="mc-core-glow">
-        <stop offset="0" stop-color="#f095c8" stop-opacity=".16"/>
-        <stop offset="1" stop-color="#f095c8" stop-opacity="0"/>
+        <stop offset="0" stop-color="${ACCENT}" stop-opacity=".10"/>
+        <stop offset="1" stop-color="${ACCENT}" stop-opacity="0"/>
       </radialGradient>
     </defs>
     <circle cx="${cx}" cy="${cy}" r="96" fill="url(#mc-core-glow)"/>
@@ -577,56 +778,16 @@ function renderSpark(byDay) {
   </svg>`;
 }
 
-/* Tile KPI: etiqueta micro, cifra dominante, unidad y caption propio. */
+/* Tile KPI: etiqueta micro, cifra dominante, unidad y caption propio. El tono
+   "violet" del diseño previo usa el violeta decisión (#a78bfa) de la paleta
+   actual, igual que el mapeo que hace el CSS para .tile.violet. */
 const tile = ({ label, num, unit = "", caption, tone = "", bar = null, strip = "" }) => `
   <div class="tile ${tone}">
     <span class="eyebrow">${esc(label)}</span>
     <span class="num">${num}${unit ? `<span class="unit">${esc(unit)}</span>` : ""}</span>
     <span class="caption">${caption}</span>
-    ${bar === null ? strip : `<div class="bar-track"><div class="bar-fill" style="width:${bar}%;background:${tone === "violet" ? "var(--violet)" : "var(--accent)"}"></div></div>`}
+    ${bar === null ? strip : `<div class="bar-track"><div class="bar-fill" style="width:${bar}%;background:${tone === "violet" ? "#a78bfa" : "var(--accent)"}"></div></div>`}
   </div>`;
-
-function laneFreshness(ts) {
-  const d = parseTs(ts);
-  if (!d) return "idle";
-  const hours = (Date.now() - d.getTime()) / 36e5;
-  return hours < 24 ? "fresh" : hours < 24 * 7 ? "warm" : hours < 24 * 30 ? "cold" : "idle";
-}
-
-function renderLanes(projects, total) {
-  if (!projects.length) {
-    return `<section class="lanes"><div class="lanes-head"><span class="name">carriles · sin proyectos</span></div>
-      ${empty("Sin proyectos", "Engram todavía no tiene memoria por proyecto.")}</section>`;
-  }
-  const max = Math.max(...projects.map((p) => p.observations || 0), 1);
-  const sum = projects.reduce((acc, p) => acc + (p.observations || 0), 0);
-  return `
-    <section class="lanes">
-      <div class="lanes-head">
-        <span class="name"><b>${projects.length}</b> carriles</span>
-        <span class="vsep">·</span>
-        <span class="name"><b>${sum}</b> obs en el ámbito</span>
-        <span class="vsep">·</span>
-        <span class="name">ordenados por peso</span>
-        <span class="lanes-pills">${["fresh", "warm", "cold", "idle"].map((tone) => {
-          const n = projects.filter((p) => laneFreshness(p.last_activity) === tone).length;
-          return n ? `<span class="lane-pill"><i class="dot ${tone === "idle" ? "" : "ok"}" style="background:${
-            { fresh: "var(--accent)", warm: "var(--accent-2)", cold: "var(--warn)" }[tone] || "var(--faint)"}"></i>${n}</span>` : "";
-        }).join("")}</span>
-      </div>
-      <div class="lanes-grid">
-        ${projects.map((p) => `
-          <button class="lane" type="button" data-project="${esc(p.name)}"
-            title="Abrir las memorias de ${esc(p.name)}">
-            <span class="status ${laneFreshness(p.last_activity)}"></span>
-            <span class="lname">${esc(p.name)}</span>
-            <span class="lcount">${p.observations || 0}<small>obs</small></span>
-            <span class="lmeta"><b>${p.sessions || 0}</b> sesiones · <b>${p.prompts || 0}</b> prompts · ${fmtPct(p.observations || 0, total)} del ámbito · ${p.last_activity ? esc(rel(p.last_activity)) : "sin fecha"}</span>
-            <span class="lbar"><i style="width:${Math.max(2, Math.round((p.observations || 0) * 100 / max))}%"></i></span>
-          </button>`).join("")}
-      </div>
-    </section>`;
-}
 
 /* --- Overview ---------------------------------------------------------------- */
 
@@ -646,8 +807,6 @@ async function viewOverview(view) {
     const a = data.activity;
     const loaded = data.observations_loaded || 0;
     const byType = Object.entries(a.by_type || {}).sort((x, y) => y[1] - x[1]);
-    const projects = [...data.projects]
-      .sort((x, y) => (y.observations || 0) - (x.observations || 0));
 
     setPulses([
       `<span class="pill ${data.health.status === "ok" ? "ok" : "warn"}">
@@ -664,6 +823,8 @@ async function viewOverview(view) {
       ["cargadas", loaded], ["cargado", rel(data.loaded_at)],
     ]);
 
+    /* Sin leyenda bajo los anillos ni carriles ni línea de tiempo: el detalle
+       por tipo vive en el panel derecho, y el panorama en los tiles. */
     view.innerHTML = `
       <div class="mc">
         <div class="mc-panel">
@@ -676,13 +837,6 @@ async function viewOverview(view) {
               <span class="sub">${t.observations} activas en total${data.truncated ? " · ventana acotada" : ""}</span>
             </div>
           </div>
-          <div class="mc-legend">
-            ${byType.map(([type, n]) => `<button class="lg" type="button" data-lg="${esc(type)}"
-              title="Ver las memorias de tipo ${esc(type)}">
-              <i style="background:${typeColor(type)}"></i>${esc(type)} <b>${n}</b>
-              <em>${fmtPct(n, loaded)}</em></button>`).join("")
-              || `<span class="muted">Sin observaciones activas en el ámbito.</span>`}
-          </div>
         </div>
 
         <div class="mc-panel">
@@ -693,7 +847,8 @@ async function viewOverview(view) {
           </div>
           <div class="bars">
             ${byType.map(([type, n]) => `
-              <div class="bar-row" data-bar="${esc(type)}">
+              <div class="bar-row" data-bar="${esc(type)}" tabindex="0" role="button"
+                aria-label="${esc(type)}: ${n} memorias, ${fmtPct(n, loaded)}. Activa para abrir Memories filtrado por este tipo.">
                 ${badge(type)}
                 <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, Math.round(n * 100 / (loaded || 1)))}%;background:${typeColor(type)}"></div></div>
                 <span class="mono">${n} · ${fmtPct(n, loaded)}</span>
@@ -707,7 +862,7 @@ async function viewOverview(view) {
           <div class="mc-split">
             <span class="eyebrow">ventana cargada</span>
             <div class="bar-track">
-              <div class="bar-fill" style="width:${Math.min(100, Math.round(loaded * 100 / (t.observations || 1)))}%;background:var(--violet)"></div>
+              <div class="bar-fill" style="width:${Math.min(100, Math.round(loaded * 100 / (t.observations || 1)))}%;background:#a78bfa"></div>
             </div>
             <span class="val">${loaded} / ${t.observations}</span>
           </div>
@@ -726,28 +881,9 @@ async function viewOverview(view) {
           bar: Math.min(100, Math.round(pct(a.d7, t.observations || 1))) })}
         ${tile({ label: "mes · 30 d", num: a.d30, tone: "violet", caption: "memorias creadas en los últimos 30 días",
           bar: Math.min(100, Math.round(pct(a.d30, t.observations || 1))) })}
-      </div>
-
-      ${renderLanes(projects, t.observations)}
-
-      <div class="card" style="margin-top:10px">
-        <h3>Actividad reciente</h3>
-        ${data.recent.length ? `<div class="timeline">${data.recent.map(obsCard).join("")}</div>`
-          : empty("Sin actividad", "Aún no hay memorias registradas.")}
       </div>`;
 
-    wireObsCards(view);
     wireRadial(view);
-    view.querySelectorAll(".lane").forEach((el) => {
-      el.onclick = () => {
-        state.project = el.dataset.project;
-        localStorage.setItem("dash.project", state.project);
-        state.session = "";
-        state.obsIndex = null;
-        syncProjectSelect();
-        location.hash = "#/memories";
-      };
-    });
   } catch (err) {
     setApiStatus(false);
     view.innerHTML = banner(err);
@@ -767,38 +903,35 @@ function wireObsCards(root) {
   });
 }
 
-/* Cada anillo, su barra y su entrada de leyenda comparten `data-*` con el tipo:
-   pasar el ratón por cualquiera de los tres resalta los otros dos. La leyenda
-   es la vía accesible (botón real) para abrir las memorias de ese tipo. */
+/* Cada anillo y su fila de barra comparten el tipo en `data-*`: pasar el ratón
+   o el foco por uno resalta el otro (.hot). Ambos son la navegación: fijan el
+   mismo state.type que marcan los chips de Memories y enrutan a #/memories.
+   "otros" agrupa tipos del motor sin un filtro único equivalente: avisa en
+   lugar de filtrar. */
 function wireRadial(root) {
+  const openType = (type) => {
+    if (type === "otros") { toast("Abre Memories y filtra por tipo para ver el detalle", ""); return; }
+    state.type = type;
+    state.q = "";
+    HL.term = "";
+    location.hash = "#/memories";
+  };
   const on = (type) => {
-    root.querySelectorAll("[data-ring], [data-bar], [data-lg]").forEach((el) => {
-      const key = el.dataset.ring || el.dataset.bar || el.dataset.lg;
+    root.querySelectorAll("[data-ring], [data-bar]").forEach((el) => {
+      const key = el.dataset.ring || el.dataset.bar;
       el.classList.toggle("hot", key === type);
     });
   };
-  root.querySelectorAll("[data-ring], [data-bar], [data-lg]").forEach((el) => {
-    const type = el.dataset.ring || el.dataset.bar || el.dataset.lg;
+  root.querySelectorAll("[data-ring], [data-bar]").forEach((el) => {
+    const type = el.dataset.ring || el.dataset.bar;
     el.onmouseenter = () => on(type);
     el.onmouseleave = () => on(null);
-  });
-  root.querySelectorAll(".lg").forEach((btn) => {
-    btn.onclick = () => {
-      state.type = btn.dataset.lg;
-      state.q = "";
-      HL.term = "";
-      location.hash = "#/memories";
+    el.onfocus = () => on(type);
+    el.onblur = () => on(null);
+    el.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openType(type); }
     };
-  });
-  root.querySelectorAll(".mc-ring-arc").forEach((arc) => {
-    arc.onclick = () => {
-      const t = arc.dataset.ring;
-      if (t === "otros") { toast("Abre Memories y filtra por tipo para ver el detalle", ""); return; }
-      state.type = t;
-      state.q = "";
-      HL.term = "";
-      location.hash = "#/memories";
-    };
+    el.onclick = () => openType(type);
   });
 }
 
@@ -1008,49 +1141,99 @@ function renderMemResults() {
 
 /* --- Sessions --------------------------------------------------------------------- */
 
+const SESSIONS_LIMIT = 500;   /* máximo del proxy: /sessions/recent ignora offset */
+const SESSIONS_CHART_DAYS = 14;
+
+/* Serie diaria (últimos 14 días, clave UTC porque así guarda el motor) sobre
+   las sesiones cargadas; los días sin actividad van a cero y se rotula cada
+   tres columnas. */
+function sessionsByDay(sessions) {
+  const counts = {};
+  for (const s of sessions) {
+    const key = String(s.started_at || "").slice(0, 10);
+    if (key) counts[key] = (counts[key] || 0) + 1;
+  }
+  const now = Date.now();
+  const DAY = 86400000;
+  const entries = [];
+  for (let i = SESSIONS_CHART_DAYS - 1; i >= 0; i--) {
+    const key = new Date(now - i * DAY).toISOString().slice(0, 10);
+    const label = `${key.slice(8, 10)}/${key.slice(5, 7)}`;
+    entries.push({
+      label,
+      value: counts[key] || 0,
+      axis: (SESSIONS_CHART_DAYS - 1 - i) % 3 === 0 ? label : "",
+    });
+  }
+  return entries;
+}
+
 async function viewSessions(view) {
   showProjectSelect(true);
   HL.term = "";
   view.innerHTML = loading();
   try {
-    const { sessions } = await api(`/api/sessions/recent?${scopeQS({ limit: 200 }).toString()}`);
+    const { sessions } = await api(`/api/sessions/recent?${scopeQS({ limit: SESSIONS_LIMIT }).toString()}`);
     if (!sessions.length) {
       view.innerHTML = empty("Sin sesiones", `No hay sesiones registradas en ${scopeLabel()}.`);
       return;
     }
     const global = !state.project;
-    view.innerHTML = `
-      ${sessions.length >= 200 ? `<div class="notice">Se listan las <b>200</b> sesiones más recientes; acota el ámbito a un proyecto para ver el resto.</div>` : ""}
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Sesión</th>
-            ${global ? `<th style="width:150px">Proyecto</th>` : ""}
-            <th style="width:140px">Memorias</th><th style="width:180px">Inicio</th><th style="width:110px"></th></tr></thead>
-          <tbody>
-            ${sessions.map((s) => `
-              <tr data-session="${esc(s.id)}">
-                <td class="mono"><div class="cell-cut" title="${esc(s.id)}">${esc(s.id)}</div></td>
-                ${global ? `<td class="mono muted">${esc(s.project)}</td>` : ""}
-                <td><b class="mono">${s.observation_count}</b> <span class="faint">obs</span></td>
-                <td class="muted" title="${esc(fmtDT(s.started_at))}">${rel(s.started_at)}</td>
-                <td class="actions-cell">${s.observation_count === 0
-                  ? `<button class="btn danger sm" data-del-session="${esc(s.id)}" title="Borrar la sesión vacía">Eliminar</button>`
-                  : ""}</td>
-              </tr>`).join("")}
-          </tbody>
-        </table>
-      </div>`;
-    view.querySelectorAll("tr[data-session]").forEach((tr) => {
-      tr.onclick = () => { location.hash = `#/sessions/${encodeURIComponent(tr.dataset.session)}`; };
-    });
-    /* Solo sesiones vacías: el botón nunca debe terminar abriendo el detalle. */
-    view.querySelectorAll("button[data-del-session]").forEach((btn) => {
-      btn.onclick = (e) => {
-        e.stopPropagation();
-        const s = sessions.find((x) => String(x.id) === btn.dataset.delSession);
-        if (s) deleteEmptySessionFlow(s);
-      };
-    });
+    const total = scopeTotalFor("sessions");
+    /* Pager cliente: el motor ignora offset en /sessions/recent, así que se
+       cargan hasta 500 y se trocean en el navegador, diciéndolo en la info. */
+    const draw = () => {
+      const pages = Math.max(Math.ceil(sessions.length / state.sSize), 1);
+      state.sPage = Math.min(Math.max(state.sPage, 1), pages);
+      const slice = sessions.slice((state.sPage - 1) * state.sSize, state.sPage * state.sSize);
+      view.innerHTML = `
+        ${sessionsHeatmap(
+          sessions,
+          `Sesiones por día en las últimas ${HEAT_WEEKS} semanas, según las ${sessions.length} sesiones cargadas de ${scopeLabel()}.`)}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Sesión</th>
+              ${global ? `<th style="width:150px">Proyecto</th>` : ""}
+              <th style="width:140px">Memorias</th><th style="width:180px">Inicio</th><th style="width:110px"></th></tr></thead>
+            <tbody>
+              ${slice.map((s) => `
+                <tr data-session="${esc(s.id)}">
+                  <td class="mono"><div class="cell-cut" title="${esc(s.id)}">${esc(s.id)}</div></td>
+                  ${global ? `<td class="mono muted">${esc(s.project)}</td>` : ""}
+                  <td><b class="mono">${s.observation_count}</b> <span class="faint">obs</span></td>
+                  <td class="muted" title="${esc(fmtDT(s.started_at))}">${rel(s.started_at)}</td>
+                  <td class="actions-cell">${s.observation_count === 0
+                    ? `<button class="btn danger sm" data-del-session="${esc(s.id)}" title="Borrar la sesión vacía">Eliminar</button>`
+                    : ""}</td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+        ${pagerBar({
+          name: "sessions", label: "Paginación de sesiones",
+          page: state.sPage, pages,
+          info: pagerInfoClient(state.sPage, state.sSize, sessions.length, total, "sesiones"),
+          size: state.sSize,
+        })}`;
+      view.querySelectorAll("tr[data-session]").forEach((tr) => {
+        tr.onclick = () => { location.hash = `#/sessions/${encodeURIComponent(tr.dataset.session)}`; };
+      });
+      /* Solo sesiones vacías: el botón nunca debe terminar abriendo el detalle. */
+      view.querySelectorAll("button[data-del-session]").forEach((btn) => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const s = sessions.find((x) => String(x.id) === btn.dataset.delSession);
+          if (s) deleteEmptySessionFlow(s);
+        };
+      });
+      wirePager(view, {
+        name: "sessions",
+        onPrev: () => { state.sPage -= 1; draw(); },
+        onNext: () => { state.sPage += 1; draw(); },
+        onSize: (n) => { state.sSize = n; state.sPage = 1; draw(); },
+      });
+    };
+    draw();
   } catch (err) {
     view.innerHTML = banner(err);
   }
@@ -1148,7 +1331,17 @@ async function viewProjects(view) {
 
 /* --- Prompts -------------------------------------------------------------------------- */
 
-const PROMPTS_LIMIT = 200;
+const PROMPTS_LIMIT = 500;   /* máximo del proxy: /prompts/recent ignora offset */
+
+/* Conteo de prompts por proyecto sobre lo cargado; alimenta la mini-gráfica. */
+function promptsByProject(prompts) {
+  const counts = {};
+  for (const p of prompts) {
+    const name = p.project || "sin proyecto";
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  return Object.entries(counts).map(([label, value]) => ({ label, value }));
+}
 
 async function viewPrompts(view) {
   showProjectSelect(true);
@@ -1162,36 +1355,54 @@ async function viewPrompts(view) {
       return;
     }
     const global = !state.project;
-    view.innerHTML = `
-      ${data.truncated
-        ? `<div class="notice">Se listan los <b>${prompts.length}</b> prompts más recientes de ${esc(scopeLabel())} (límite de la petición).</div>`
-        : `<div class="notice muted">Mostrando <b>${prompts.length}</b> prompts de ${esc(scopeLabel())}.</div>`}
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th style="width:80px">ID</th>
-            ${global ? `<th style="width:130px">Proyecto</th>` : ""}
-            <th style="width:180px">Sesión</th><th>Contenido</th>
-            <th style="width:120px">Creado</th><th style="width:110px"></th></tr></thead>
-          <tbody>
-            ${prompts.map((p) => `
-              <tr data-prompt-id="${esc(p.id)}">
-                <td class="mono muted">#${esc(p.id)}</td>
-                ${global ? `<td class="mono muted" title="${esc(p.project)}"><div class="cell-cut">${esc(p.project)}</div></td>` : ""}
-                <td class="mono muted"><div class="cell-cut" title="${esc(p.session_id)}">${esc(p.session_id)}</div></td>
-                <td><div class="preview">${highlight(esc(String(p.content || "").slice(0, 220)))}</div></td>
-                <td class="muted" title="${esc(fmtDT(p.created_at))}">${rel(p.created_at)}</td>
-                <td class="actions-cell"><button class="btn danger sm" data-del-prompt="${esc(p.id)}"
-                  title="Borrar el prompt de forma permanente">Eliminar</button></td>
-              </tr>`).join("")}
-          </tbody>
-        </table>
-      </div>`;
-    view.querySelectorAll("button[data-del-prompt]").forEach((btn) => {
-      btn.onclick = () => {
-        const p = prompts.find((x) => String(x.id) === btn.dataset.delPrompt);
-        if (p) deletePromptFlow(p);
-      };
-    });
+    const total = scopeTotalFor("prompts");
+    /* Pager cliente: el motor ignora offset en /prompts/recent, así que se
+       cargan hasta 500 y se trocean en el navegador, diciéndolo en la info. */
+    const draw = () => {
+      const pages = Math.max(Math.ceil(prompts.length / state.pSize), 1);
+      state.pPage = Math.min(Math.max(state.pPage, 1), pages);
+      const slice = prompts.slice((state.pPage - 1) * state.pSize, state.pPage * state.pSize);
+      view.innerHTML = `
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th style="width:80px">ID</th>
+              ${global ? `<th style="width:130px">Proyecto</th>` : ""}
+              <th style="width:180px">Sesión</th><th>Contenido</th>
+              <th style="width:120px">Creado</th><th style="width:110px"></th></tr></thead>
+            <tbody>
+              ${slice.map((p) => `
+                <tr data-prompt-id="${esc(p.id)}">
+                  <td class="mono muted">#${esc(p.id)}</td>
+                  ${global ? `<td class="mono muted" title="${esc(p.project)}"><div class="cell-cut">${esc(p.project)}</div></td>` : ""}
+                  <td class="mono muted"><div class="cell-cut" title="${esc(p.session_id)}">${esc(p.session_id)}</div></td>
+                  <td><div class="preview">${highlight(esc(String(p.content || "").slice(0, 220)))}</div></td>
+                  <td class="muted" title="${esc(fmtDT(p.created_at))}">${rel(p.created_at)}</td>
+                  <td class="actions-cell"><button class="btn danger sm" data-del-prompt="${esc(p.id)}"
+                    title="Borrar el prompt de forma permanente">Eliminar</button></td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+        ${pagerBar({
+          name: "prompts", label: "Paginación de prompts",
+          page: state.pPage, pages,
+          info: pagerInfoClient(state.pPage, state.pSize, prompts.length, total, "prompts"),
+          size: state.pSize,
+        })}`;
+      view.querySelectorAll("button[data-del-prompt]").forEach((btn) => {
+        btn.onclick = () => {
+          const p = prompts.find((x) => String(x.id) === btn.dataset.delPrompt);
+          if (p) deletePromptFlow(p);
+        };
+      });
+      wirePager(view, {
+        name: "prompts",
+        onPrev: () => { state.pPage -= 1; draw(); },
+        onNext: () => { state.pPage += 1; draw(); },
+        onSize: (n) => { state.pSize = n; state.pPage = 1; draw(); },
+      });
+    };
+    draw();
   } catch (err) {
     view.innerHTML = banner(err);
   }
@@ -1466,22 +1677,65 @@ const RELATION_LABELS = {
   scoped: "acotada", supersedes: "sustituye", conflicts_with: "en conflicto",
 };
 
+/* Mismo tono que las insignias de juicio (t-session_summary, t-discovery, t-bugfix). */
+const JUDGMENT_HUE = { pending: "#ea1889", judged: "#34d399", orphaned: "#f87171" };
+
+/* Mezcla de relación/revisión: una barra por estado de juicio más la cola de
+   revisión vencida. Todo sale de las respuestas que la vista ya pide. */
+function healthChartEntries(stats, review) {
+  const by = (stats && stats.by_judgment_status) || {};
+  const entries = [
+    { label: "pendientes", value: by.pending ?? 0, color: JUDGMENT_HUE.pending },
+    { label: "juzgadas", value: by.judged ?? 0, color: JUDGMENT_HUE.judged },
+    { label: "huérfanas", value: by.orphaned ?? 0, color: JUDGMENT_HUE.orphaned },
+  ];
+  if (review && review.count) {
+    entries.push({ label: "revisión vencida", value: review.count, color: "#fbbf24" });
+  }
+  return entries;
+}
+
 async function viewHealth(view) {
   showProjectSelect(true);
   HL.term = "";
   view.innerHTML = loading();
-  const scope = scopeQS({ limit: 100, offset: state.cOffset });
+  const scope = scopeQS({ limit: state.cLimit, offset: state.cOffset });
   if (state.cStatus) scope.set("status", state.cStatus);
   try {
     const page = await api(`/api/conflicts?${scope}`);
     const [stats, review] = await Promise.all([
       api(`/api/conflicts/stats?${scopeQS()}`).catch(() => null),
-      api(`/api/review?${scopeQS({ limit: 100 })}`).catch(() => null),
+      api(`/api/review?${scopeQS({ limit: state.rLimit, offset: state.rOffset })}`).catch(() => null),
     ]);
     const relations = [...(page.relations || [])];
     const relationsShown = state.cRelation
       ? relations.filter((r) => r.relation === state.cRelation) : relations;
     const relationTypes = [...new Set(relations.map((r) => r.relation))].sort();
+
+    /* Pager de servidor: /api/conflicts y /api/review sí reenvían offset a
+       través de _paging_params. Sin total en la respuesta no hay pager: nada
+       que inventar. */
+    const relationsTotal = page.total ?? null;
+    const relationsPages = relationsTotal
+      ? Math.max(Math.ceil(relationsTotal / state.cLimit), 1) : 1;
+    const relationsPage = Math.min(Math.floor(state.cOffset / state.cLimit) + 1, relationsPages);
+    state.cOffset = (relationsPage - 1) * state.cLimit;
+    const relationsPager = pagerBar({
+      name: "relations", label: "Paginación de relaciones",
+      page: relationsPage, pages: relationsPages,
+      info: relationsTotal ? pagerInfoServer(relationsPage, state.cLimit, relationsTotal, "relaciones") : "",
+      size: state.cLimit,
+    });
+    const reviewTotal = review && review.count ? review.count : null;
+    const reviewPages = reviewTotal ? Math.max(Math.ceil(reviewTotal / state.rLimit), 1) : 1;
+    const reviewPage = Math.min(Math.floor(state.rOffset / state.rLimit) + 1, reviewPages);
+    state.rOffset = (reviewPage - 1) * state.rLimit;
+    const reviewPager = pagerBar({
+      name: "review", label: "Paginación de la cola de revisión",
+      page: reviewPage, pages: reviewPages,
+      info: reviewTotal ? pagerInfoServer(reviewPage, state.rLimit, reviewTotal, "memorias") : "",
+      size: state.rLimit,
+    });
 
     view.innerHTML = `
       <div class="grid cols-3" style="margin-bottom:18px">
@@ -1515,6 +1769,10 @@ async function viewHealth(view) {
         </div>
       </div>
 
+      ${donutChart(
+        `Juicio de relaciones de ${scopeLabel()}: pendientes, juzgadas y sin juicio, más las memorias con revisión vencida.`,
+        healthChartEntries(stats, review), "")}
+
       ${review && review.count ? `
         <div class="card" style="margin-bottom:18px">
           <h3>Cola de revisión</h3>
@@ -1529,6 +1787,7 @@ async function viewHealth(view) {
                 </tr>`).join("")}
             </tbody>
           </table></div>
+          ${reviewPager}
         </div>` : ""}
 
       <div class="card">
@@ -1562,10 +1821,7 @@ async function viewHealth(view) {
             </tbody>
           </table></div>`
           : empty("Sin relaciones", `No hay relaciones ${state.cStatus ? `en estado ${state.cStatus} ` : ""}en ${scopeLabel()}.`)}
-        ${relations.length < (page.total || 0) ? `
-          <div style="text-align:center;margin-top:14px">
-            <button class="btn" id="conf-more">Cargar más (${(page.total || 0) - relations.length} restantes)</button>
-          </div>` : ""}
+        ${relationsPager}
       </div>`;
 
     $("#conf-status").value = state.cStatus;
@@ -1574,8 +1830,18 @@ async function viewHealth(view) {
     };
     $("#conf-relation").value = state.cRelation;
     $("#conf-relation").onchange = (e) => { state.cRelation = e.target.value; viewHealth(view); };
-    const more = $("#conf-more");
-    if (more) more.onclick = () => { state.cOffset += (page.limit || 100); viewHealth(view); };
+    wirePager(view, {
+      name: "review",
+      onPrev: () => { state.rOffset = Math.max(state.rOffset - state.rLimit, 0); viewHealth(view); },
+      onNext: () => { state.rOffset += state.rLimit; viewHealth(view); },
+      onSize: (n) => { state.rLimit = n; state.rOffset = 0; viewHealth(view); },
+    });
+    wirePager(view, {
+      name: "relations",
+      onPrev: () => { state.cOffset = Math.max(state.cOffset - state.cLimit, 0); viewHealth(view); },
+      onNext: () => { state.cOffset += state.cLimit; viewHealth(view); },
+      onSize: (n) => { state.cLimit = n; state.cOffset = 0; viewHealth(view); },
+    });
     view.querySelectorAll("tr[data-relation]").forEach((tr) => {
       tr.onclick = () => showRelation(tr.dataset.relation);
     });
@@ -1748,6 +2014,9 @@ $("#project-select").addEventListener("change", (e) => {
   state.session = "";
   state.offset = 0;
   state.cOffset = 0;
+  state.rOffset = 0;
+  state.pPage = 1;
+  state.sPage = 1;
   state.obsIndex = null;
   localStorage.setItem("dash.project", state.project);
   route();
