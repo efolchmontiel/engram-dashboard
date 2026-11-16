@@ -403,149 +403,290 @@ mark {
 .pill.ok { color: var(--ok); border-color: rgba(52, 211, 153, .35); background: var(--ok-soft); }
 .pill.warn { color: var(--warn); border-color: rgba(251, 191, 36, .35); background: var(--warn-soft); }
 
-/* --- 5. overview · wheel + stats + pager ----------------------------------- */
+/* --- 5. overview · mission control (rings + stats column + tiles) ---------- */
 
-/* Wheel wrapper: the donut app.js renders (viewBox 0 0 560 560, rOut 250,
-   rIn 150) is the navigation surface of the overview. Geometry, arc hues and
-   label anchors are inline SVG attributes set by app.js; CSS owns cursor,
-   the selected state, the focus ring and the transitions. */
-.wheel {
-  position: relative;
-  width: 100%;
-  max-width: 560px;
-  margin: 0 auto 4px;
+/* Ported from the previous overview layout and re-skinned to the current
+   token set: no old pink/wine values, no glow shadows, 10px/8px radii.
+   Two panels: the concentric-ring distribution with its radar sweep and the
+   centre readout, then the pace column (hero number, type bars, window
+   splits, sparkline). Below, six KPI tiles. There is deliberately no
+   .mc-legend/.lg anymore. Arc hues, the sweep gradient and the ring geometry
+   are inline SVG attributes set by app.js; CSS owns the stage, the stroke
+   states and the motion. */
+
+.mc {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
-.wheel svg {
-  display: block;
+@media (max-width: 1080px) {
+  .mc { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Panel: hairline surface, 10px radius, generous padding. */
+.mc-panel {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 16px 18px;
+}
+
+/* Concentric rings: centred stage, the ring SVG sized by the markup. */
+.mc-rings {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 340px;
+}
+
+.mc-rings svg {
   width: 100%;
+  max-width: 500px;
   height: auto;
   overflow: visible;
+  animation: mc-in .5s ease-out both;
 }
 
-.wheel-arc {
+@keyframes mc-in {
+  from { opacity: 0; transform: scale(.975); }
+}
+
+.mc-ring-track {
+  fill: none;
+  stroke: var(--line);
+}
+
+.mc-ring-arc {
+  fill: none;
+  stroke-linecap: round;
   cursor: pointer;
-  transition: fill-opacity .16s ease, transform .16s ease;
-  outline: none;
-  fill-opacity: .82;
+  transition: stroke-width .16s ease;
 }
 
-.wheel-arc:hover { fill-opacity: .92; }
+/* Hover and the cross-highlight thicken the arc; no glow. */
+.mc-ring-arc:hover,
+.mc-ring-arc.hot { stroke-width: calc(var(--w) * 1.6); }
 
-.wheel-arc.on { fill-opacity: 1; }
-
-/* Focus ring: 2px magenta over the arc's own stroke. */
-.wheel-arc:focus-visible {
-  stroke: var(--accent);
-  stroke-width: 2;
+/* Radar sweep: slow rotating wedge; (210, 210) is the SVG centre. */
+.mc-sweep {
+  transform-origin: 210px 210px;
+  animation: mc-spin 11s linear infinite;
 }
 
-/* Labels sit on the arcs themselves: dark ink over the type hue. */
-.wheel-label {
-  fill: #09090b;
-  font: 500 9px var(--mono);
+.mc-sweep-edge { stroke: rgba(234, 24, 137, .5); stroke-width: 1; }
+
+@keyframes mc-spin {
+  to { transform: rotate(360deg); }
+}
+
+body[data-hidden="1"] .mc-sweep { animation-play-state: paused; }
+
+.mc-ring-label {
+  font: 8px var(--mono);
   letter-spacing: .06em;
+  fill: var(--muted);
   text-transform: uppercase;
-  pointer-events: none;
-  user-select: none;
 }
 
-/* The donut hole: the big numeral of the loaded scope (or of the hovered
-   wedge, written by app.js) plus that type's share of the total. */
-.wheel-hole {
+/* Hole readout: the loaded-scope total, centred over the rings. */
+.mc-center {
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
   text-align: center;
   pointer-events: none;
 }
 
-.wheel-hole .num {
-  display: block;
-  font: 700 44px/1.1 var(--sans);
-  letter-spacing: -.045em;
+.mc-center .num {
+  font: 600 40px/1 var(--mono);
+  letter-spacing: -1.5px;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
-.wheel-hole .unit {
-  display: block;
-  margin-top: 8px;
+.mc-center .unit {
   color: var(--muted);
-  font: 600 9px var(--sans);
+  font: 600 9.5px var(--sans);
   letter-spacing: var(--track);
   text-transform: uppercase;
 }
 
-/* Share row: how much of the loaded scope the hovered or selected type owns.
-   The fill hue is set inline by app.js. */
-.wheel-hole .share {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 190px;
-  margin: 9px auto 0;
+.mc-center .sub {
+  margin-top: 3px;
+  font: 10px var(--mono);
+  color: var(--faint);
 }
 
-.wheel-hole .share .track {
+/* Right column: the 7-day share as the hero number, then the type bars and
+   the window splits. */
+.mc-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 12px;
+}
+
+.mc-hero .num {
+  font: 600 44px/1 var(--mono);
+  letter-spacing: -2px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.mc-hero .num .unit { font-size: 20px; letter-spacing: -.5px; }
+
+.mc-hero .caption { color: var(--muted); font-size: 11.5px; }
+
+.mc-hero .caption b { color: var(--text); font: 500 11.5px var(--mono); }
+
+/* Split rows: label · track · value. */
+.mc-split {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0 12px;
+}
+
+.mc-split .val {
+  min-width: 52px;
+  text-align: right;
+  font: 11px var(--mono);
+  color: var(--muted);
+}
+
+/* Sparkline of daily activity: one visible line, no glow. */
+.spark {
+  display: block;
+  width: 100%;
+  height: 34px;
+}
+
+.spark .spark-track { fill: rgba(255, 255, 255, .04); }
+
+.spark .spark-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+/* Type bars: badge · track · value, with the .hot cross-highlight shared
+   with the rings. The fill hue rides on an inline style set by app.js. */
+.bars { display: flex; flex-direction: column; gap: 7px; }
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: var(--r-sm);
+  transition: background .14s ease;
+}
+
+.bar-row.hot { background: var(--accent-soft); }
+
+.bar-row .badge { min-width: 112px; text-align: center; }
+
+.bar-track {
   flex: 1;
-  height: 3px;
+  height: 4px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, .09);
+  background: rgba(255, 255, 255, .05);
   overflow: hidden;
 }
 
-.wheel-hole .share .track i {
-  display: block;
+.bar-fill {
   height: 100%;
   border-radius: 99px;
   background: var(--accent);
 }
 
-.wheel-hole .share .v {
-  font: 9.5px var(--mono);
-  color: var(--faint);
-  white-space: nowrap;
-}
-
-/* Four key numbers under the wheel: equal cells split by 1px column rules,
-   no cards. */
-.stats-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 20px 0 0;
-}
-
-.stat-cell {
-  padding: 2px 18px;
-  min-width: 0;
-}
-
-.stat-cell:first-child { padding-left: 0; }
-
-.stat-cell + .stat-cell { border-left: 1px solid var(--line); }
-
-.stat-cell .k {
-  color: var(--faint);
-  font: 600 9px var(--sans);
-  letter-spacing: var(--track);
-  text-transform: uppercase;
-}
-
-.stat-cell .v {
-  margin-top: 5px;
-  color: var(--text);
-  font: 600 22px/1.15 var(--mono);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -.02em;
-}
-
-.stat-cell .s {
-  margin-top: 3px;
+.bar-row .mono {
+  min-width: 46px;
+  text-align: right;
+  font-size: 11px;
   color: var(--muted);
-  font-size: 10.5px;
 }
+
+/* Six KPI tiles under the panels. */
+.mc-tiles {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 1400px) {
+  .mc-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 700px) {
+  .mc-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 13px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+.tile .num {
+  font: 600 25px/1 var(--mono);
+  letter-spacing: -.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.tile .num .unit {
+  margin-left: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tile .caption {
+  color: var(--faint);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.tile .bar-track { height: 3px; margin-top: auto; }
+
+.tile .bar {
+  height: 3px;
+  margin-top: auto;
+  border-radius: 99px;
+  background: var(--accent);
+}
+
+.tile .strip {
+  display: flex;
+  gap: 2px;
+  height: 10px;
+  margin-top: auto;
+}
+
+.tile .strip i { flex: 1; border-radius: 1px; background: rgba(255, 255, 255, .05); }
+
+.tile.accent .num { color: var(--accent); }
+
+/* Old `--violet` mapped to the decision violet already present in the
+   current badge hue set (#a78bfa). */
+.tile.violet .num { color: #a78bfa; }
 
 /* Compact hairline pager bar: prev/next, position readout, page size. */
 .pager {
@@ -737,7 +878,7 @@ mark {
   letter-spacing: .04em;
 }
 
-/* Time-window control pinned to the wheel's top-right edge. */
+/* Time-window control pinned to the rings panel's top-right edge. */
 .windows {
   position: absolute;
   right: 4px;
@@ -998,19 +1139,9 @@ select:focus { outline: none; border-color: rgba(234, 24, 137, .5); }
   color: var(--text);
 }
 
-/* Health view: relation counts as flat hairline rows. */
-.bars { display: flex; flex-direction: column; }
-
-.bar-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.bar-row:last-child { border-bottom: 0; }
+/* Health view: relation counts. The .bars/.bar-row rows now live in the
+   overview section (badge · track · value layout shared with the overview
+   pace column). */
 
 /* --- 9. badges ------------------------------------------------------------- */
 
@@ -1658,7 +1789,7 @@ td .preview {
   }
 
   .skeleton, .btn, .chip, .toast, .tl-item, .tl-title,
-  tbody tr, .wheel-arc, .pager-btn, #nav a, #drawer, #modal, .destructive {
+  tbody tr, .mc-ring-arc, .mc-sweep, .pager-btn, #nav a, #drawer, #modal, .destructive {
     transition: none;
     animation: none;
   }
@@ -1689,10 +1820,6 @@ body[data-hidden="1"] :is(#drawer, #modal, .destructive) {
   #topbar, #view, #ticker { padding-left: 16px; padding-right: 16px; }
 
   .grid, .grid.cols-3, .grid.cols-2 { grid-template-columns: minmax(0, 1fr); }
-
-  .wheel-hole .num { font-size: 32px; }
-
-  .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 14px; }
 
   .meta-grid { grid-template-columns: minmax(0, 1fr); }
 

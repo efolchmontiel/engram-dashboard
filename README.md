@@ -2,11 +2,11 @@
 
 Interfaz web local para consultar y gestionar la memoria de [Engram](https://github.com/Gentleman-Programming/engram). Backend con la librería estándar de Python y la API HTTP del motor; frontend en HTML, CSS y JavaScript sin compilación ni dependencias. Versión de referencia: **Engram 3.7.2**. Escucha en `http://127.0.0.1:7438` y no incorpora autenticación de usuarios.
 
-![Panel de resumen: dona de distribución por tipo, cuatro cifras y navegación lateral](docs/dashboard.png)
+![Panel de resumen: radar de anillos, columna de ritmo y tipos, y seis cifras](docs/dashboard.png)
 
 ## Qué incluye
 
-- **Overview**: la distribución por tipo como una dona navegable. Cada cuña es un tipo y **al tocarla se abre Memories filtrado por ese tipo**, así el gráfico funciona como atajo y no como adorno. Debajo, cuatro cifras —observaciones, sesiones, proyectos y últimas 24 h— y nada más: el detalle vive en Memories.
+- **Overview**: el radar de anillos con la distribución por tipo, y a su derecha el ritmo de los últimos 7 días, una barra por tipo con su conteo y porcentaje, la actividad diaria de 30 días y la ventana cargada. Debajo, seis cifras: memorias, sesiones, proyectos, hoy · 24 h, semana · 7 d y mes · 30 d. El radar **no repite la lista de tipos**: esa información ya está en la columna derecha, y **al tocar un anillo o su barra se abre Memories filtrado por ese tipo**.
 - **Memories**: exploración por proyecto o global, búsqueda FTS del motor, filtros por tipo y sesión, orden configurable y aviso cuando el ámbito se truncó.
 - **Sessions**: mapa de calor de 26 semanas por día, más el listado paginado con eliminación de sesiones vacías.
 - **Prompts**: listado paginado con búsqueda y eliminación permanente.
