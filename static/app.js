@@ -481,151 +481,178 @@ function windowNotice(shown, truncated, total) {
   </div>`;
 }
 
-/* --- panel de control: color por tipo, radial, sparkline, carriles ------------- */
+/* --- Overview: la cinta solar ------------------------------------------------ */
 
-/* Un mismo color por tipo en el radial, las barras y las etiquetas. */
+/* Un mismo color por tipo en la banda, el encabezado del tipo y el ledger.
+   Paleta fija del sistema; los tipos no catalogados caen al gris de "otros". */
 const TYPE_HUE = {
-  decision: "#b4e7c7", architecture: "#ffb1dd", bugfix: "#ff718f", config: "#e0c27a",
-  discovery: "#f095c8", learning: "#b4e7c7", pattern: "#a9c7ee", preference: "#c4daf6",
-  session_summary: "#f2b86d", bug: "#f2b86d", error: "#ff718f", manual: "#a78e9b",
+  session_summary: "#ea1889", discovery: "#34d399", bugfix: "#f87171",
+  decision: "#a78bfa", config: "#38bdf8", architecture: "#fbbf24",
+  preference: "#f472b6", pattern: "#a3e635", manual: "#94a3b8", otros: "#52525b",
 };
-const typeColor = (t) => TYPE_HUE[t] || "#76616b";
+const typeColor = (t) => TYPE_HUE[t] || "#52525b";
 
 const pct = (n, d) => (d ? (n * 100) / d : 0);
 const fmtPct = (n, d) => (d ? `${pct(n, d).toFixed(1).replace(/\.0$/, "")}%` : "—");
 
-/* Anillos concéntricos: un anillo por tipo, arco proporcional a su cuota y hueco
-   a las 12 en punto para que la etiqueta del anillo quepa sin taparlo.
-   El número de anillos está acotado por la legibilidad de la etiqueta: los tipos
-   restantes se agrupan en un único anillo "otros", sin perder el desglose, que
-   sigue íntegro en la leyenda y en las barras. */
-const RADIAL_MAX = 9;
+/* El semicírculo se reparte entre un número acotado de cuñas para que la
+   etiqueta horizontal siga cabiendo: los tipos restantes se agrupan en una
+   única cuña "otros", sin perder el desglose, que vive en el aria-label.
+   Misma regla de acotado (9 + otros) que tenía el radial. */
+const SOLAR_MAX = 9;
 
-function renderRadial(byType, total) {
+/* Geometría de la banda elíptica: centro (620, 300), radios exteriores
+   (600, 252) e interiores (322, 104); las cuñas van de 180° a 360°, cada una
+   con un pequeño hueco angular para que las vecinas nunca se toquen. */
+const SOLAR_GEO = {
+  cx: 620, cy: 300, rxo: 600, ryo: 252, rxi: 322, ryi: 104,
+  gap: 0.8, labelRx: 462, labelRy: 178, minLabelDeg: 15,
+};
+
+function solarPt(rx, ry, deg) {
+  const a = (deg * Math.PI) / 180;
+  return [SOLAR_GEO.cx + rx * Math.cos(a), SOLAR_GEO.cy + ry * Math.sin(a)];
+}
+
+/* Sector anular real: dos arcos elípticos y dos rectas, nunca stroke-dasharray. */
+function solarSector(a0, a1) {
+  const f = (n) => n.toFixed(2);
+  const [x0, y0] = solarPt(SOLAR_GEO.rxo, SOLAR_GEO.ryo, a0);
+  const [x1, y1] = solarPt(SOLAR_GEO.rxo, SOLAR_GEO.ryo, a1);
+  const [x2, y2] = solarPt(SOLAR_GEO.rxi, SOLAR_GEO.ryi, a1);
+  const [x3, y3] = solarPt(SOLAR_GEO.rxi, SOLAR_GEO.ryi, a0);
+  const large = a1 - a0 > 180 ? 1 : 0;
+  return `M${f(x0)} ${f(y0)}A${SOLAR_GEO.rxo} ${SOLAR_GEO.ryo} 0 ${large} 1 ${f(x1)} ${f(y1)}` +
+    `L${f(x2)} ${f(y2)}A${SOLAR_GEO.rxi} ${SOLAR_GEO.ryi} 0 ${large} 0 ${f(x3)} ${f(y3)}Z`;
+}
+
+/* Reparto en cuñas: tipos ordenados por peso, cola agrupada en "otros". */
+function solarBuckets(byType) {
   const all = Object.entries(byType || {}).sort((a, b) => b[1] - a[1]);
-  const head = all.slice(0, RADIAL_MAX - (all.length > RADIAL_MAX ? 1 : 0));
+  const head = all.slice(0, SOLAR_MAX - (all.length > SOLAR_MAX ? 1 : 0));
   const tail = all.slice(head.length);
-  const ringsData = tail.length
+  const wedges = tail.length
     ? [...head, ["otros", tail.reduce((acc, [, n]) => acc + n, 0)]]
     : all;
+  return { wedges, tail: tail.map(([t]) => t), all };
+}
 
-  const S = 420, cx = 210, cy = 210, rOut = 200, rIn = 62, GAP_DEG = 16;
-  const n = ringsData.length;
-  const step = n ? (rOut - rIn) / n : 0;
-  const width = Math.max(4, Math.min(13, step * 0.62));
+/* Estado de la cinta: la selección vive entre refrescos; el modelo alimenta
+   el hover (nombre y conteo al hueco) y el ledger de "otros". */
+let solarSelected = "";
+let solarModel = { total: 0, wedges: [], tail: [], loaded: 0, scopeTotal: 0 };
 
-  /* Sin texto dentro del radial: un hueco angular no puede alojar etiquetas
-     largas en anillos de radios distintos. Cada anillo se identifica por su
-     color, y la leyenda de debajo (mismo panel) da tipo y recuento. */
-  const rings = ringsData.map(([type, count], i) => {
-    const r = rOut - step * (i + 0.5);
-    const C = 2 * Math.PI * r;
-    const gap = (C * GAP_DEG) / 360;
-    const arc = (C - gap) * (total ? count / total : 0);
-    const color = type === "otros" ? "#ffb1dd" : typeColor(type);
-    return `
-      <circle class="mc-ring-track" cx="${cx}" cy="${cy}" r="${r}" stroke-width="${width}"/>
-      <circle class="mc-ring-arc" data-ring="${esc(type)}" cx="${cx}" cy="${cy}" r="${r}" stroke="${color}"
-        style="--w:${width}" stroke-width="${width}" stroke-dasharray="${arc} ${C - arc}"
-        transform="rotate(${-90 + GAP_DEG / 2} ${cx} ${cy})"><title>${esc(type)}: ${count} (${fmtPct(count, total)})</title></circle>`;
-  });
+/* Control de ventana: la API no da desglose por tipo por ventana, así que la
+   banda muestra el agregado real del ámbito cargado y el control queda
+   visual, como en la referencia. */
+function solarWindows() {
+  return `<div class="windows" role="group" aria-label="Ventana de tiempo">
+    <button data-w="24h">24 h</button><button data-w="7d">7 d</button>
+    <button data-w="30d">30 d</button><button class="on" data-w="todo">todo</button>
+  </div>`;
+}
 
-  if (!n) {
-    rings.push(`
-      <circle class="mc-ring-track" cx="${cx}" cy="${cy}" r="${(rOut + rIn) / 2}" stroke-width="10"
-        stroke-dasharray="3 9" stroke-linecap="round"/>`);
-  }
-
+function renderSolar(byType, total, selected) {
+  const { wedges, all } = solarBuckets(byType);
   const breakdown = all.map(([t, c]) => `${t} ${c}`).join(", ") || "sin tipos";
-  return `<svg viewBox="0 0 ${S} ${S}" role="img"
-      aria-label="Distribución por tipo: ${total} observaciones en ${all.length} tipos. ${breakdown}.">
-    <defs>
-      <linearGradient id="mc-sweep-grad" x1="210" y1="10" x2="304.1" y2="33.4" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#f095c8" stop-opacity="0"/>
-        <stop offset=".72" stop-color="#f095c8" stop-opacity=".10"/>
-        <stop offset="1" stop-color="#ff76c3" stop-opacity=".34"/>
-      </linearGradient>
-      <radialGradient id="mc-core-glow">
-        <stop offset="0" stop-color="#f095c8" stop-opacity=".16"/>
-        <stop offset="1" stop-color="#f095c8" stop-opacity="0"/>
-      </radialGradient>
-    </defs>
-    <circle cx="${cx}" cy="${cy}" r="96" fill="url(#mc-core-glow)"/>
-    ${rings.join("")}
-    <g class="mc-sweep">
-      <path d="M210 210 L210 10 A200 200 0 0 1 304.1 33.4 Z" fill="url(#mc-sweep-grad)"/>
-      <line class="mc-sweep-edge" x1="210" y1="210" x2="304.1" y2="33.4"/>
-    </g>
-  </svg>`;
+  const hole = `<div class="solar-hole">
+      <div class="num" data-hole-num>${total}</div>
+      <div class="unit" data-hole-unit>${esc(scopeLabel())}</div>
+    </div>`;
+  if (!wedges.length) {
+    return `<div class="solar">
+      <svg class="band" viewBox="0 0 1240 300" role="img" aria-label="Sin observaciones activas en el ámbito."></svg>
+      ${hole}
+      ${solarWindows()}
+    </div>`;
+  }
+  const n = wedges.length;
+  const usable = 180 - n * SOLAR_GEO.gap;
+  let a = 180;
+  const parts = [];
+  for (const [type, count] of wedges) {
+    const span = total ? (count / total) * usable : 0;
+    const a0 = a + SOLAR_GEO.gap / 2;
+    const a1 = a + span + SOLAR_GEO.gap / 2;
+    const on = type === selected;
+    const color = typeColor(type);
+    const name = type.replace(/_/g, " ");
+    parts.push(`<path class="wedge${on ? " on" : ""}" data-type="${esc(type)}" d="${solarSector(a0, a1)}"
+      fill="${color}" fill-opacity="${on ? "0.92" : "0.34"}" stroke="${color}" stroke-opacity="0.55" stroke-width="0.8"
+      role="button" tabindex="0" aria-pressed="${on}"
+      aria-label="${esc(name)}: ${count} observaciones, ${fmtPct(count, total)} del total"/>`);
+    /* Etiqueta horizontal solo donde la cuña tiene ancho para sostenerla; las
+       angostas se identifican al pasar el puntero o el foco, que escriben
+       nombre y conteo en el hueco. */
+    if (span >= SOLAR_GEO.minLabelDeg) {
+      const mid = (a0 + a1) / 2;
+      const [lx, ly] = solarPt(SOLAR_GEO.labelRx, SOLAR_GEO.labelRy, mid);
+      parts.push(`<text class="wlabel" x="${lx.toFixed(2)}" y="${ly.toFixed(2)}"
+        text-anchor="middle" dominant-baseline="middle">${esc(name)} <tspan class="wcount">${count}</tspan></text>`);
+    }
+    a += span;
+  }
+  return `<div class="solar">
+    <svg class="band" viewBox="0 0 1240 300" role="img"
+      aria-label="Distribución de ${total} observaciones en ${all.length} tipos. Cada cuña es un tipo y actúa como pestaña. ${breakdown}.">
+      ${parts.join("")}
+    </svg>
+    ${hole}
+    ${solarWindows()}
+  </div>`;
 }
 
-/* Serie diaria real (activity.by_day). Sin dato no se dibuja línea. */
-function renderSpark(byDay) {
-  const days = Object.entries(byDay || {});
-  if (days.length < 2) return "";
-  const W = 200, H = 32, max = Math.max(...days.map(([, v]) => v), 1);
-  const dx = W / (days.length - 1);
-  const d = days.map(([, v], i) => {
-    const x = (i * dx).toFixed(2);
-    const y = (H - 2 - (v / max) * (H - 6)).toFixed(2);
-    return `${i ? "L" : "M"}${x} ${y}`;
-  }).join(" ");
-  const active = days.filter(([, v]) => v > 0).length;
-  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
-      aria-label="Actividad diaria: ${active} de ${days.length} días con memoria nueva, máximo ${max}.">
-    <path class="spark-line" vector-effect="non-scaling-stroke" d="${d}"/>
-  </svg>`;
+/* Encabezado del tipo seleccionado: swatch en su tono, nombre y la línea de
+   datos con conteo, cuota y la ventana realmente cargada. */
+function renderTypehead(type, count, total, loaded, scopeTotal) {
+  return `<div class="typehead">
+    <span class="swatch" style="background:${typeColor(type)}"></span>
+    <div>
+      <h1>${esc(type.replace(/_/g, " "))}</h1>
+      <div class="fact"><b>${count}</b> observaciones · <b>${fmtPct(count, total)}</b> del total · ventana cargada ${loaded} de ${scopeTotal}</div>
+    </div>
+  </div>`;
 }
 
-/* Tile KPI: etiqueta micro, cifra dominante, unidad y caption propio. */
-const tile = ({ label, num, unit = "", caption, tone = "", bar = null, strip = "" }) => `
-  <div class="tile ${tone}">
-    <span class="eyebrow">${esc(label)}</span>
-    <span class="num">${num}${unit ? `<span class="unit">${esc(unit)}</span>` : ""}</span>
-    <span class="caption">${caption}</span>
-    ${bar === null ? strip : `<div class="bar-track"><div class="bar-fill" style="width:${bar}%;background:${tone === "violet" ? "var(--violet)" : "var(--accent)"}"></div></div>`}
+/* Ledger del tipo seleccionado: hairlines con hora, título, preview y meta.
+   "otros" no existe como tipo en el motor: se pide el ámbito y se filtra por
+   los tipos agrupados en la cuña. */
+const solarRow = (o) => `
+  <div class="lrow" data-obs-id="${o.id}">
+    <span class="h">${esc(rel(o.created_at))}</span>
+    <div>
+      <div class="t">${esc(o.title)}</div>
+      <div class="p">${mdPreview(o.content, 160)}</div>
+      <div class="meta">${esc(o.project || "—")} · ${esc(o.topic_key || "—")}</div>
+    </div>
+    <span class="tpill" style="--c:${typeColor(o.type)}">${esc(String(o.type || "otro").replace(/_/g, " "))}</span>
+    <span class="when" title="${esc(fmtDT(o.updated_at))}">${esc(rel(o.updated_at))}</span>
   </div>`;
 
-function laneFreshness(ts) {
-  const d = parseTs(ts);
-  if (!d) return "idle";
-  const hours = (Date.now() - d.getTime()) / 36e5;
-  return hours < 24 ? "fresh" : hours < 24 * 7 ? "warm" : hours < 24 * 30 ? "cold" : "idle";
-}
-
-function renderLanes(projects, total) {
-  if (!projects.length) {
-    return `<section class="lanes"><div class="lanes-head"><span class="name">carriles · sin proyectos</span></div>
-      ${empty("Sin proyectos", "Engram todavía no tiene memoria por proyecto.")}</section>`;
+async function fillSolarLedger(view, type) {
+  const host = $("#solar-ledger");
+  if (!host) return;
+  host.innerHTML = loading();
+  try {
+    const qs = scopeQS({ limit: 1000 });
+    if (type !== "otros") qs.set("type", type);
+    const data = await api(`/api/observations?${qs}`);
+    let items = data.observations || [];
+    if (type === "otros") items = items.filter((o) => solarModel.tail.includes(o.type || "other"));
+    items = items
+      .sort((x, y) => String(y.updated_at || "").localeCompare(String(x.updated_at || "")))
+      .slice(0, 100);
+    if (!items.length) {
+      host.innerHTML = empty("Sin memorias", `No hay memorias de tipo ${esc(type.replace(/_/g, " "))} en ${esc(scopeLabel())}.`);
+      return;
+    }
+    host.innerHTML = `<div class="ledger">${items.map(solarRow).join("")}</div>`;
+    host.querySelectorAll("[data-obs-id]").forEach((el) => {
+      el.onclick = () => openObservationFromList(el.dataset.obsId);
+    });
+  } catch (err) {
+    host.innerHTML = banner(err);
   }
-  const max = Math.max(...projects.map((p) => p.observations || 0), 1);
-  const sum = projects.reduce((acc, p) => acc + (p.observations || 0), 0);
-  return `
-    <section class="lanes">
-      <div class="lanes-head">
-        <span class="name"><b>${projects.length}</b> carriles</span>
-        <span class="vsep">·</span>
-        <span class="name"><b>${sum}</b> obs en el ámbito</span>
-        <span class="vsep">·</span>
-        <span class="name">ordenados por peso</span>
-        <span class="lanes-pills">${["fresh", "warm", "cold", "idle"].map((tone) => {
-          const n = projects.filter((p) => laneFreshness(p.last_activity) === tone).length;
-          return n ? `<span class="lane-pill"><i class="dot ${tone === "idle" ? "" : "ok"}" style="background:${
-            { fresh: "var(--accent)", warm: "var(--accent-2)", cold: "var(--warn)" }[tone] || "var(--faint)"}"></i>${n}</span>` : "";
-        }).join("")}</span>
-      </div>
-      <div class="lanes-grid">
-        ${projects.map((p) => `
-          <button class="lane" type="button" data-project="${esc(p.name)}"
-            title="Abrir las memorias de ${esc(p.name)}">
-            <span class="status ${laneFreshness(p.last_activity)}"></span>
-            <span class="lname">${esc(p.name)}</span>
-            <span class="lcount">${p.observations || 0}<small>obs</small></span>
-            <span class="lmeta"><b>${p.sessions || 0}</b> sesiones · <b>${p.prompts || 0}</b> prompts · ${fmtPct(p.observations || 0, total)} del ámbito · ${p.last_activity ? esc(rel(p.last_activity)) : "sin fecha"}</span>
-            <span class="lbar"><i style="width:${Math.max(2, Math.round((p.observations || 0) * 100 / max))}%"></i></span>
-          </button>`).join("")}
-      </div>
-    </section>`;
 }
 
 /* --- Overview ---------------------------------------------------------------- */
@@ -645,9 +672,11 @@ async function viewOverview(view) {
     const t = data.totals;
     const a = data.activity;
     const loaded = data.observations_loaded || 0;
-    const byType = Object.entries(a.by_type || {}).sort((x, y) => y[1] - x[1]);
-    const projects = [...data.projects]
-      .sort((x, y) => (y.observations || 0) - (x.observations || 0));
+    const { wedges, tail } = solarBuckets(a.by_type);
+    solarModel = { total: loaded, wedges, tail, loaded, scopeTotal: t.observations };
+    if (!wedges.some(([ty]) => ty === solarSelected)) {
+      solarSelected = wedges.length ? wedges[0][0] : "";
+    }
 
     setPulses([
       `<span class="pill ${data.health.status === "ok" ? "ok" : "warn"}">
@@ -658,96 +687,27 @@ async function viewOverview(view) {
       `<span class="pill">carga ${esc((data.loaded_at || "").slice(11, 19))}</span>`,
     ]);
 
+    /* Sin tiles ni carriles: los contadores globales viven en la cinta del pie
+       y el detalle por tipo vive en el encabezado y el ledger de la banda. */
     setTicker([
       ["observaciones", t.observations], ["sesiones", t.sessions],
-      ["proyectos", t.projects], ["tipos", byType.length],
+      ["proyectos", t.projects], ["tipos", wedges.length],
+      ["24 h", a.d1], ["7 d", a.d7], ["30 d", a.d30],
       ["cargadas", loaded], ["cargado", rel(data.loaded_at)],
     ]);
 
+    const sel = wedges.find(([ty]) => ty === solarSelected) || ["", 0];
     view.innerHTML = `
-      <div class="mc">
-        <div class="mc-panel">
-          <span class="eyebrow">distribución por tipo · ${byType.length} tipo${byType.length === 1 ? "" : "s"} · ${loaded} cargadas</span>
-          <div class="mc-rings">
-            ${renderRadial(a.by_type, loaded)}
-            <div class="mc-center">
-              <span class="num">${loaded}</span>
-              <span class="unit">observaciones</span>
-              <span class="sub">${t.observations} activas en total${data.truncated ? " · ventana acotada" : ""}</span>
-            </div>
-          </div>
-          <div class="mc-legend">
-            ${byType.map(([type, n]) => `<button class="lg" type="button" data-lg="${esc(type)}"
-              title="Ver las memorias de tipo ${esc(type)}">
-              <i style="background:${typeColor(type)}"></i>${esc(type)} <b>${n}</b>
-              <em>${fmtPct(n, loaded)}</em></button>`).join("")
-              || `<span class="muted">Sin observaciones activas en el ámbito.</span>`}
-          </div>
-        </div>
+      ${renderSolar(a.by_type, loaded, solarSelected)}
+      ${wedges.length ? renderTypehead(sel[0], sel[1], loaded, loaded, t.observations) : ""}
+      <div id="solar-ledger"></div>`;
 
-        <div class="mc-panel">
-          <span class="eyebrow">ritmo · últimos 7 días</span>
-          <div class="mc-hero">
-            <span class="num">${fmtPct(a.d7, t.observations).replace("%", "")}<span class="unit">%</span></span>
-            <span class="caption"><b>${a.d7}</b> de <b>${t.observations}</b> memorias se crearon en los últimos 7 días</span>
-          </div>
-          <div class="bars">
-            ${byType.map(([type, n]) => `
-              <div class="bar-row" data-bar="${esc(type)}">
-                ${badge(type)}
-                <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, Math.round(n * 100 / (loaded || 1)))}%;background:${typeColor(type)}"></div></div>
-                <span class="mono">${n} · ${fmtPct(n, loaded)}</span>
-              </div>`).join("") || `<div class="caption muted">Sin observaciones activas en el ámbito.</div>`}
-          </div>
-          <div class="mc-split">
-            <span class="eyebrow">actividad diaria · 30 d</span>
-            ${renderSpark(a.by_day)}
-            <span class="val">${a.d30} en 30 d</span>
-          </div>
-          <div class="mc-split">
-            <span class="eyebrow">ventana cargada</span>
-            <div class="bar-track">
-              <div class="bar-fill" style="width:${Math.min(100, Math.round(loaded * 100 / (t.observations || 1)))}%;background:var(--violet)"></div>
-            </div>
-            <span class="val">${loaded} / ${t.observations}</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="mc-tiles">
-        ${tile({ label: "memorias", num: t.observations, tone: "accent",
-          caption: "observaciones activas en el motor",
-          strip: `<span class="strip">${byType.map(([type, n]) => `<i style="background:${typeColor(type)};flex-grow:${Math.max(n, .35)}"></i>`).join("") || `<i></i>`}</span>` })}
-        ${tile({ label: "sesiones", num: t.sessions, caption: "sesiones que escribieron memoria" })}
-        ${tile({ label: "proyectos", num: t.projects, caption: "proyectos con memoria" })}
-        ${tile({ label: "hoy · 24 h", num: a.d1, caption: "memorias creadas en las últimas 24 h",
-          bar: Math.min(100, Math.round(pct(a.d1, t.observations || 1))) })}
-        ${tile({ label: "semana · 7 d", num: a.d7, tone: "violet", caption: "memorias creadas en los últimos 7 días",
-          bar: Math.min(100, Math.round(pct(a.d7, t.observations || 1))) })}
-        ${tile({ label: "mes · 30 d", num: a.d30, tone: "violet", caption: "memorias creadas en los últimos 30 días",
-          bar: Math.min(100, Math.round(pct(a.d30, t.observations || 1))) })}
-      </div>
-
-      ${renderLanes(projects, t.observations)}
-
-      <div class="card" style="margin-top:10px">
-        <h3>Actividad reciente</h3>
-        ${data.recent.length ? `<div class="timeline">${data.recent.map(obsCard).join("")}</div>`
-          : empty("Sin actividad", "Aún no hay memorias registradas.")}
-      </div>`;
-
-    wireObsCards(view);
-    wireRadial(view);
-    view.querySelectorAll(".lane").forEach((el) => {
-      el.onclick = () => {
-        state.project = el.dataset.project;
-        localStorage.setItem("dash.project", state.project);
-        state.session = "";
-        state.obsIndex = null;
-        syncProjectSelect();
-        location.hash = "#/memories";
-      };
-    });
+    wireSolar(view);
+    if (!wedges.length) {
+      $("#solar-ledger").innerHTML = empty("Sin observaciones", "Engram todavía no tiene memoria en este ámbito.");
+    } else {
+      await fillSolarLedger(view, solarSelected);
+    }
   } catch (err) {
     setApiStatus(false);
     view.innerHTML = banner(err);
@@ -767,39 +727,63 @@ function wireObsCards(root) {
   });
 }
 
-/* Cada anillo, su barra y su entrada de leyenda comparten `data-*` con el tipo:
-   pasar el ratón por cualquiera de los tres resalta los otros dos. La leyenda
-   es la vía accesible (botón real) para abrir las memorias de ese tipo. */
-function wireRadial(root) {
-  const on = (type) => {
-    root.querySelectorAll("[data-ring], [data-bar], [data-lg]").forEach((el) => {
-      const key = el.dataset.ring || el.dataset.bar || el.dataset.lg;
-      el.classList.toggle("hot", key === type);
-    });
+/* Hover y foco escriben nombre y conteo en el hueco; al salir vuelve el
+   agregado del ámbito. El clic (o Enter/Espacio) selecciona el tipo. */
+function wireSolar(view) {
+  const holeNum = $("[data-hole-num]", view);
+  const holeUnit = $("[data-hole-unit]", view);
+  const showScope = () => {
+    if (!holeNum || !holeUnit) return;
+    holeNum.textContent = solarModel.total;
+    holeUnit.textContent = scopeLabel();
   };
-  root.querySelectorAll("[data-ring], [data-bar], [data-lg]").forEach((el) => {
-    const type = el.dataset.ring || el.dataset.bar || el.dataset.lg;
-    el.onmouseenter = () => on(type);
-    el.onmouseleave = () => on(null);
+  const showWedge = (type) => {
+    const w = solarModel.wedges.find(([t]) => t === type);
+    if (!w || !holeNum || !holeUnit) return;
+    holeNum.textContent = w[1];
+    holeUnit.textContent = type.replace(/_/g, " ");
+  };
+  view.querySelectorAll(".wedge").forEach((w) => {
+    const type = w.dataset.type;
+    const hot = () => w.setAttribute("fill-opacity", w.classList.contains("on") ? "0.92" : "0.72");
+    const rest = () => w.setAttribute("fill-opacity", w.classList.contains("on") ? "0.92" : "0.34");
+    w.addEventListener("mouseenter", () => { hot(); showWedge(type); });
+    w.addEventListener("mouseleave", () => { rest(); showScope(); });
+    w.addEventListener("focus", () => { hot(); showWedge(type); });
+    w.addEventListener("blur", () => { rest(); showScope(); });
+    w.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectSolarType(view, type); }
+    });
+    w.addEventListener("click", () => selectSolarType(view, type));
   });
-  root.querySelectorAll(".lg").forEach((btn) => {
-    btn.onclick = () => {
-      state.type = btn.dataset.lg;
-      state.q = "";
-      HL.term = "";
-      location.hash = "#/memories";
-    };
+  /* Ventana visual: sin desglose por tipo por ventana en la API. */
+  const win = view.querySelectorAll(".windows button");
+  win.forEach((b) => {
+    b.addEventListener("click", () => {
+      win.forEach((x) => x.classList.toggle("on", x === b));
+    });
   });
-  root.querySelectorAll(".mc-ring-arc").forEach((arc) => {
-    arc.onclick = () => {
-      const t = arc.dataset.ring;
-      if (t === "otros") { toast("Abre Memories y filtra por tipo para ver el detalle", ""); return; }
-      state.type = t;
-      state.q = "";
-      HL.term = "";
-      location.hash = "#/memories";
-    };
+  showScope();
+}
+
+/* Selección: repinta cuñas, encabezado y ledger sin cambiar de ruta. */
+function selectSolarType(view, type) {
+  solarSelected = type;
+  const w = solarModel.wedges.find(([t]) => t === type) || ["", 0];
+  view.querySelectorAll(".wedge").forEach((p) => {
+    const on = p.dataset.type === type;
+    p.classList.toggle("on", on);
+    p.setAttribute("aria-pressed", String(on));
+    p.setAttribute("fill-opacity", on ? "0.92" : "0.34");
   });
+  const head = view.querySelector(".typehead");
+  if (head) {
+    $(".swatch", head).style.background = typeColor(type);
+    $("h1", head).textContent = type.replace(/_/g, " ");
+    $(".fact", head).innerHTML =
+      `<b>${w[1]}</b> observaciones · <b>${fmtPct(w[1], solarModel.total)}</b> del total · ventana cargada ${solarModel.loaded} de ${solarModel.scopeTotal}`;
+  }
+  fillSolarLedger(view, type);
 }
 
 /* El radar no gira con la pestaña oculta ni con movimiento reducido. Al volver
