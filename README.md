@@ -21,15 +21,6 @@ Interfaz web local para consultar y gestionar la memoria de [Engram](https://git
 
 El dashboard no crea observaciones, sesiones ni proyectos, y no juzga relaciones ni cambia estados de revisión: eso se hace con las herramientas de Engram.
 
-## Navegación
-
-El menú vive en una barra lateral fija de 222 px: marca, buscador, las siete vistas con su conteo, los proyectos con memoria y el estado de la API al pie. La barra superior solo lleva el título, las ventanas de tiempo y el botón de recarga.
-
-| Atajo | Acción |
-| --- | --- |
-| `Ctrl`/`⌘` + `K` | Enfocar el buscador |
-| `Esc` | Cerrar el detalle o el diálogo |
-
 ## Paginado
 
 | Vista | Cómo pagina |
